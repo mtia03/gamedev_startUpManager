@@ -819,6 +819,158 @@ textarea:focus {
 
 .biz-warn { color: var(--neon-orange); }
 
+/* 면접 창 확대 */
+.expand-toggle {
+    align-self: flex-end;
+    padding: 5px 12px;
+    margin-bottom: 8px;
+    border-radius: var(--border-radius-md);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-secondary);
+    font-family: var(--font-sans);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.expand-toggle:hover {
+    background: rgba(255, 255, 255, 0.12);
+    color: var(--text-primary);
+}
+
+.right-sidebar.expanded {
+    position: fixed;
+    top: 4vh;
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(880px, 92vw);
+    height: 92vh;
+    z-index: 160;
+    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.6);
+}
+
+/* 확대 상태에서 대화창이 남는 공간을 모두 차지하도록 */
+.right-sidebar.expanded .chat-history {
+    max-height: none;
+    flex: 1;
+}
+
+.right-sidebar.expanded .chat-message {
+    font-size: 14px;
+    max-width: 78%;
+}
+
+.expand-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 155;
+    background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(3px);
+}
+
+/* 면접 진행 중 표시 — 그 주에 확정하지 않으면 지원자가 떠난다 */
+.live-badge {
+    display: inline-block;
+    margin-top: 4px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(239, 68, 68, 0.2);
+    color: #fca5a5;
+    font-size: 10px;
+    font-weight: 700;
+    animation: live-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes live-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.55; }
+}
+
+/* 지원자 마감 눈치 (숫자 대신 문구로만) */
+.urgency {
+    display: block;
+    margin-top: 6px;
+    font-size: 11px;
+    font-style: italic;
+    line-height: 1.4;
+}
+
+.urgency.soon { color: var(--neon-orange); }
+.urgency.urgent { color: var(--neon-red); }
+
+/* 섹션 확대 버튼 */
+.section-expand {
+    float: right;
+    padding: 2px 8px;
+    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-secondary);
+    font-size: 11px;
+    cursor: pointer;
+    line-height: 1.4;
+}
+
+.section-expand:hover {
+    background: rgba(255, 255, 255, 0.12);
+    color: var(--text-primary);
+}
+
+/* 면접 대기 줄 모달 */
+.pool-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 12px;
+}
+
+.pool-card {
+    border: 1px solid var(--panel-border);
+    border-radius: var(--border-radius-md);
+    background: rgba(255, 255, 255, 0.03);
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+}
+
+.pool-card.selected {
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.pool-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.pool-name { font-size: 14px; font-weight: 700; }
+
+.pool-demand {
+    text-align: right;
+    white-space: nowrap;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--neon-orange);
+}
+
+.pool-demand small {
+    display: block;
+    font-size: 10px;
+    font-weight: 400;
+    color: var(--text-secondary);
+}
+
+.pool-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 12px;
+}
+
+.pool-actions .btn { flex: 1; }
+
 /* 팀 & 기록 */
 .btn-team {
     background: rgba(59, 130, 246, 0.18);

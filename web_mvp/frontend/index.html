@@ -75,7 +75,10 @@
 
             <!-- 구직 지원자 목록 -->
             <div class="candidate-section">
-                <h3>인재 채용 풀 (LLM 면접 대기)</h3>
+                <h3>
+                    인재 채용 풀 (LLM 면접 대기)
+                    <button class="section-expand" id="open-pool-btn" title="지원자 전체 보기">⤢</button>
+                </h3>
                 <div class="candidate-list" id="candidate-list">
                     <!-- JS로 채워짐 -->
                 </div>
@@ -103,7 +106,10 @@
         </main>
 
         <!-- 3. 우측 사이드바: 실시간 LLM 면접 채팅창 -->
-        <aside class="sidebar right-sidebar">
+        <aside class="sidebar right-sidebar" id="right-sidebar">
+            <button class="expand-toggle" id="expand-interview-btn"
+                    title="면접 창 확대 / 축소">⤢ 확대</button>
+
             <div class="interview-header" id="interview-header-empty">
                 <div class="empty-state">
                     <span class="icon">💬</span>
@@ -171,6 +177,8 @@
                         <span id="decision-status-text">협상 진행 중...</span>
                     </div>
                     <button class="btn btn-success w-100 d-none" id="hire-confirm-btn">채용 및 책상 배치하기</button>
+                    <button class="btn btn-secondary w-100" id="reject-candidate-btn"
+                            style="margin-top:8px;">이 지원자 탈락시키기</button>
                 </div>
             </div>
         </aside>
@@ -191,6 +199,19 @@
             </div>
 
             <div class="biz-body" id="biz-body">
+                <!-- JS로 채워짐 -->
+            </div>
+        </div>
+    </div>
+
+    <!-- 면접 대기 줄 모달 -->
+    <div class="biz-modal d-none" id="pool-modal">
+        <div class="biz-panel">
+            <div class="biz-header">
+                <h2>면접 대기 줄</h2>
+                <button class="biz-close" id="pool-close-btn">&times;</button>
+            </div>
+            <div class="biz-body" id="pool-body">
                 <!-- JS로 채워짐 -->
             </div>
         </div>

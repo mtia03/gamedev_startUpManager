@@ -73,6 +73,106 @@ function resizeCanvas() {
 
 // REST API 호출 - 게임 상태 받아오기
 // ----------------------------------------------------
+// 🧑‍💻 면접 대기 줄
+// ----------------------------------------------------
+async function openPoolModal() {
+    document.getElementById('pool-modal').classList.remove('d-none');
+    await fetchGameState();
+    renderPool();
+}
+
+function closePoolModal() {
+    document.getElementById('pool-modal').classList.add('d-none');
+}
+
+function renderPool() {
+    const body = document.getElementById('pool-body');
+    const list = gameState.candidates || [];
+    if (!list.length) {
+        body.innerHTML = `<p class="biz-empty">
+            지원자가 없습니다. 주차를 진행하면 새 지원자가 찾아옵니다.</p>`;
+        return;
+    }
+    body.innerHTML = `
+        <p class="biz-sub" style="margin-bottom:14px;">
+            대기 ${list.length}명 · 지원자는 일정 기간이 지나면 스스로 지원을 철회합니다.
+        </p>
+        <div class="pool-grid">${list.map(renderPoolCard).join('')}</div>
+    `;
+    wirePool();
+}
+
+function renderPoolCard(c) {
+    const traits = (c.traits || []).map(t =>
+        `<span class="trait ${t.tone}" title="${t.desc}">${t.label}</span>`).join('');
+
+    const stats = Object.entries(c.stats).map(([f, v]) => `
+        <div class="stat-cell ${f === c.main_field ? 'main' : ''}">
+            <span class="k">${FIELD_LABEL[f]}</span>
+            <span class="v">${v}</span>
+        </div>`).join('');
+
+    const dropped = c.initial_demand && c.current_salary < c.initial_demand
+        ? `<small>최초 $${c.initial_demand.toLocaleString()}</small>` : '';
+
+    return `
+        <div class="pool-card ${gameState.selectedCandidateTag === c.tag ? 'selected' : ''}">
+            <div class="pool-top">
+                <div>
+                    <div class="pool-name">${c.name}
+                        <span class="biz-tier">${c.education}</span>
+                    </div>
+                    <div class="biz-sub">${FIELD_LABEL[c.main_field]} 전문 · CA ${c.CA}</div>
+                    <div class="biz-sub">
+                        ${c.negotiation_turns ? `협상 ${c.negotiation_turns}회 진행` : '아직 접촉 전'}
+                    </div>
+                    ${c.interview_open
+                        ? '<span class="live-badge">면접 중 · 이번 주 마감</span>' : ''}
+                </div>
+                <div class="pool-demand">
+                    $${c.current_salary.toLocaleString()}
+                    ${dropped}
+                    <small>희망 연봉</small>
+                </div>
+            </div>
+
+            <div class="trait-row">${traits}</div>
+            ${c.urgency ? `<span class="urgency ${c.urgency.level}">"${c.urgency.hint}"</span>` : ''}
+            <div class="stat-row">${stats}</div>
+
+            <div class="pool-actions">
+                <button class="btn btn-primary btn-sm" data-interview="${c.tag}">면접 보기</button>
+                <button class="btn btn-secondary btn-sm"
+                        data-drop="${c.tag}" data-name="${c.name}">탈락</button>
+            </div>
+        </div>
+    `;
+}
+
+function wirePool() {
+    document.querySelectorAll('[data-interview]').forEach(el => {
+        el.onclick = () => {
+            selectCandidate(el.dataset.interview);
+            closePoolModal();
+            const sidebar = document.getElementById('right-sidebar');
+            if (!sidebar.classList.contains('expanded')) toggleInterviewExpand();
+        };
+    });
+    document.querySelectorAll('[data-drop]').forEach(el => {
+        el.onclick = async () => {
+            if (!confirm(`${el.dataset.name}를 탈락시킬까요? 지원 목록에서 사라집니다.`)) return;
+            const r = await postJson('/api/candidates/reject', { developer_tag: el.dataset.drop });
+            if (r) {
+                showToast(`${r.name} 지원자를 탈락시켰습니다.`);
+                if (gameState.selectedCandidateTag === el.dataset.drop) clearInterviewPanel();
+                await fetchGameState();
+                renderPool();
+            }
+        };
+    });
+}
+
+// ----------------------------------------------------
 // 👥 팀 & 기록
 // ----------------------------------------------------
 const LOG_KINDS = [
@@ -673,6 +773,14 @@ function updateUI() {
                 <span>${cand.main_field} 전문</span>
                 <span>희망연봉: $${cand.current_salary.toLocaleString()}</span>
             </div>
+            <div class="candidate-meta">
+                <span>${cand.negotiation_turns ? `협상 ${cand.negotiation_turns}회` : '미접촉'}</span>
+                ${cand.interview_open
+                    ? '<span class="live-badge">면접 중 · 이번 주 마감</span>' : ''}
+            </div>
+            ${cand.urgency
+                ? `<span class="urgency ${cand.urgency.level}">"${cand.urgency.hint}"</span>`
+                : ''}
         `;
         listEl.appendChild(item);
     });
@@ -759,20 +867,39 @@ async function sendChatMessage() {
         // 4. 채용 상태 갱신
         const statusBox = document.getElementById('decision-status-box');
         const hireBtn = document.getElementById('hire-confirm-btn');
-        
+
+        // 지원자가 스스로 떠난 경우 (아주 드물게 발생)
+        if (data.walked_away) {
+            statusBox.className = 'decision-status';
+            document.getElementById('decision-status-text').textContent =
+                '지원자가 협상을 중단하고 떠났습니다.';
+            hireBtn.classList.add('d-none');
+            showToast('🚪 지원자가 떠났습니다.');
+            await fetchGameState();
+            clearInterviewPanel();
+            return;
+        }
+
         if (data.hired) {
             statusBox.className = 'decision-status accepted';
             document.getElementById('decision-status-text').textContent = `협상 완료 (제안 연봉: $${data.salary_demanded.toLocaleString()})`;
             hireBtn.classList.remove('d-none');
-            
+
             gameState.placementCandidateTag = tag;
             gameState.placementSalary = data.salary_demanded;
         } else {
             statusBox.className = 'decision-status';
-            document.getElementById('decision-status-text').textContent = `협상 진행 중 (지원자 요구: $${data.salary_demanded.toLocaleString()})`;
+            const offered = data.offered_salary
+                ? ` / 내 제안 $${data.offered_salary.toLocaleString()}`
+                : '';
+            document.getElementById('decision-status-text').textContent =
+                `협상 진행 중 (요구 $${data.salary_demanded.toLocaleString()}${offered})`;
             hireBtn.classList.add('d-none');
         }
-        
+
+        // 요구 연봉이 내려갔을 수 있으니 목록도 갱신
+        await fetchGameState();
+
     } catch (error) {
         loader.classList.add('d-none');
         showToast('❌ 오류: ' + error.message);
@@ -801,6 +928,16 @@ async function advanceWeek(rest = false) {
     const restBtn = document.getElementById('rest-week-btn');
     if (btn.disabled) return;
 
+    // 면접을 시작해놓고 확정하지 않은 지원자는 주차가 넘어가면 떠난다
+    const pending = (gameState.candidates || []).filter(c => c.interview_open);
+    if (pending.length) {
+        const names = pending.map(c => `· ${c.name}`).join('\n');
+        const msg = `면접이 진행 중인 지원자가 있습니다.\n\n${names}\n\n`
+            + '이번 주에 채용을 확정하지 않으면 이들은 마음을 접고 떠납니다.\n'
+            + '그래도 다음 주로 넘어갈까요?';
+        if (!confirm(msg)) return;
+    }
+
     btn.disabled = true;
     restBtn.disabled = true;
     try {
@@ -825,6 +962,9 @@ async function advanceWeek(rest = false) {
         if (!document.getElementById('team-modal').classList.contains('d-none')) {
             await refreshTeam();
         }
+        if (!document.getElementById('pool-modal').classList.contains('d-none')) {
+            renderPool();
+        }
 
         const messages = [`🗓️ ${data.week}주차 시작`, ...data.events];
         if (data.is_bankrupt) messages.push('💀 게임 오버 — 회사가 파산했습니다.');
@@ -839,7 +979,60 @@ async function advanceWeek(rest = false) {
     }
 }
 
+// 면접 패널을 빈 상태로 되돌린다 (탈락 / 이탈 / 채용 후)
+function clearInterviewPanel() {
+    gameState.selectedCandidateTag = null;
+    gameState.placementCandidateTag = null;
+    document.getElementById('interview-active-panel').classList.add('d-none');
+    document.getElementById('interview-header-empty').classList.remove('d-none');
+    updateUI();
+}
+
+// 면접 창 확대 / 축소
+function toggleInterviewExpand() {
+    const sidebar = document.getElementById('right-sidebar');
+    const btn = document.getElementById('expand-interview-btn');
+    const expanded = sidebar.classList.toggle('expanded');
+    btn.textContent = expanded ? '⤡ 축소' : '⤢ 확대';
+
+    let backdrop = document.getElementById('expand-backdrop');
+    if (expanded) {
+        if (!backdrop) {
+            backdrop = document.createElement('div');
+            backdrop.id = 'expand-backdrop';
+            backdrop.className = 'expand-backdrop';
+            backdrop.onclick = toggleInterviewExpand;
+            document.body.appendChild(backdrop);
+        }
+    } else if (backdrop) {
+        backdrop.remove();
+    }
+    scrollToBottom();
+}
+
+// 지원자 탈락
+async function rejectCandidate() {
+    const tag = gameState.selectedCandidateTag;
+    if (!tag) {
+        showToast('⚠️ 선택된 지원자가 없습니다.');
+        return;
+    }
+    const cand = gameState.candidates.find(c => c.tag === tag);
+    if (!confirm(`${cand ? cand.name : '이 지원자'}를 탈락시킬까요? 지원 목록에서 사라집니다.`)) return;
+
+    const r = await postJson('/api/candidates/reject', { developer_tag: tag });
+    if (r) {
+        showToast(`${r.name} 지원자를 탈락시켰습니다.`);
+        await fetchGameState();
+        clearInterviewPanel();
+    }
+}
+
 function setupEventListeners() {
+    // 면접 창 확대 / 탈락
+    document.getElementById('expand-interview-btn').addEventListener('click', toggleInterviewExpand);
+    document.getElementById('reject-candidate-btn').addEventListener('click', rejectCandidate);
+
     // 시작 세팅 화면
     document.getElementById('setup-start-btn').addEventListener('click', startGame);
     document.getElementById('setup-company-name').addEventListener('keydown', (e) => {
@@ -867,6 +1060,13 @@ function setupEventListeners() {
             bizTab = el.dataset.tab;
             renderBusinesses();
         });
+    });
+
+    // 면접 대기 줄 모달
+    document.getElementById('open-pool-btn').addEventListener('click', openPoolModal);
+    document.getElementById('pool-close-btn').addEventListener('click', closePoolModal);
+    document.getElementById('pool-modal').addEventListener('click', (e) => {
+        if (e.target.id === 'pool-modal') closePoolModal();
     });
 
     // 팀 & 기록 모달
