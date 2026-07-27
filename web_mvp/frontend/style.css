@@ -48,6 +48,7 @@ body {
 .d-none { display: none !important; }
 .text-success { color: var(--neon-green) !important; }
 .text-warning { color: var(--neon-orange) !important; }
+.text-danger { color: var(--neon-red) !important; }
 .w-100 { width: 100%; }
 
 /* 사이드바 기본 공통 스타일 (Glassmorphism) */
@@ -565,6 +566,36 @@ textarea:focus {
     background: #059669;
     transform: translateY(-1px);
     box-shadow: 0 6px 15px rgba(16, 185, 129, 0.4);
+}
+
+/* 주차 진행 버튼 */
+.btn-advance {
+    width: 100%;
+    margin-top: 12px;
+    padding: 10px;
+    border: none;
+    border-radius: var(--border-radius-md);
+    cursor: pointer;
+    font-family: var(--font-sans);
+    font-weight: 600;
+    font-size: 13px;
+    color: #ffffff;
+    background: var(--accent-purple);
+    box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
+    transition: all var(--transition-speed) ease;
+}
+
+.btn-advance:hover:not(:disabled) {
+    background: #7c3aed;
+    transform: translateY(-1px);
+    box-shadow: 0 6px 15px rgba(139, 92, 246, 0.4);
+}
+
+.btn-advance:disabled {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-secondary);
+    box-shadow: none;
+    cursor: not-allowed;
 }
 
 /* 채용 판정 */

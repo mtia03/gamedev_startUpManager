@@ -68,6 +68,7 @@ uv run python main.py
 | `GET` | `/api/state` | 회사 정보, 책상 배치, 지원자 목록, 재직자 목록 조회 |
 | `POST` | `/api/chat` | 지원자와 면접 대화 (`developer_tag`, `message`) |
 | `POST` | `/api/hire` | 책상을 지정해 채용 (`developer_tag`, `desk_id`, `salary`) |
+| `POST` | `/api/advance_week` | 1주 진행 — 급여 지출, 사기·피로 변동, 파산 판정 |
 
 ## 구조
 
@@ -106,5 +107,6 @@ uv run python scripts/stat_survey.py
 ## 현재 한계
 
 - 게임 상태가 인메모리라 서버 재시작 시 초기화됩니다
-- 프로젝트 진행 · 시간 경과 등 경영 루프는 아직 미구현이고, 채용까지만 동작합니다
+- 채용과 주차 진행까지 동작하고, 프로젝트 착수·진행은 아직 미구현입니다
+- 연봉 스케일이 미조정 상태라 자금 압박이 거의 없습니다 (설계 문서 §7-1 참고)
 - CORS가 전체 허용(`*`)이라 로컬 개발 전용입니다

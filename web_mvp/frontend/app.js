@@ -1,6 +1,7 @@
 // 글로벌 상태 관리
 let gameState = {
     company: null,
+    time: null,
     desks: [],
     candidates: [],
     hiredEmployees: {},
@@ -77,6 +78,7 @@ async function fetchGameState() {
         const data = await response.json();
         
         gameState.company = data.company;
+        gameState.time = data.time;
         gameState.desks = data.desks;
         gameState.candidates = data.candidates;
         gameState.hiredEmployees = data.hired_employees;
@@ -96,6 +98,17 @@ function updateUI() {
     document.getElementById('company-funds').textContent = `$${gameState.company.funds.toLocaleString()}`;
     document.getElementById('company-reputation').textContent = gameState.company.reputation.toLocaleString();
     document.getElementById('company-staff').textContent = `${gameState.company.staff_count} 명`;
+
+    // 시간 진행 현황
+    if (gameState.time) {
+        document.getElementById('company-week').textContent = `${gameState.time.week} 주차`;
+        document.getElementById('company-payroll').textContent =
+            `$${gameState.time.weekly_payroll.toLocaleString()}`;
+
+        const advanceBtn = document.getElementById('advance-week-btn');
+        advanceBtn.disabled = gameState.time.is_bankrupt;
+        advanceBtn.textContent = gameState.time.is_bankrupt ? '파산 — 진행 불가' : '다음 주로 →';
+    }
 
     // 지원자 리스트 렌더링
     const listEl = document.getElementById('candidate-list');
@@ -237,9 +250,40 @@ function scrollToBottom() {
 }
 
 // 이벤트 리스너 세팅
+// 1주 진행 요청
+async function advanceWeek() {
+    const btn = document.getElementById('advance-week-btn');
+    if (btn.disabled) return;
+
+    btn.disabled = true;
+    try {
+        const response = await fetch('/api/advance_week', { method: 'POST' });
+        const data = await response.json();
+
+        if (!response.ok) {
+            showToast('⚠️ ' + (data.detail || '주차를 진행할 수 없습니다.'));
+            return;
+        }
+
+        await fetchGameState();
+
+        const messages = [`🗓️ ${data.week}주차 시작`, ...data.events];
+        if (data.is_bankrupt) messages.push('💀 게임 오버 — 회사가 파산했습니다.');
+        showToastQueue(messages);
+    } catch (error) {
+        showToast('❌ 주차 진행 실패: ' + error.message);
+    } finally {
+        // 파산 여부는 갱신된 상태를 기준으로 updateUI가 다시 판단한다
+        if (!gameState.time || !gameState.time.is_bankrupt) btn.disabled = false;
+    }
+}
+
 function setupEventListeners() {
     // 채팅 전송 버튼 클릭
     document.getElementById('chat-send-btn').addEventListener('click', sendChatMessage);
+
+    // 주차 진행
+    document.getElementById('advance-week-btn').addEventListener('click', advanceWeek);
     
     // 엔터키 채팅 전송 (쉬프트 제외)
     document.getElementById('chat-input').addEventListener('keydown', (e) => {
@@ -525,8 +569,15 @@ function showToast(text) {
     const toast = document.getElementById('toast');
     toast.textContent = text;
     toast.classList.add('show');
-    
+
     setTimeout(() => {
         toast.classList.remove('show');
     }, 3000);
+}
+
+// 여러 건의 알림을 순차적으로 표시 (한 번에 띄우면 서로 덮어씀)
+function showToastQueue(messages) {
+    messages.forEach((msg, i) => {
+        setTimeout(() => showToast(msg), i * 3200);
+    });
 }

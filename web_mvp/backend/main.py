@@ -27,6 +27,20 @@ app.add_middleware(
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 client = genai.Client(api_key=GEMINI_API_KEY)
 
+# ── 턴 루프 튜닝 파라미터 ──────────────────────────────────────
+# current_salary는 '연봉'으로 취급한다 (프론트 표기 및 채용 협상 기준과 동일).
+WEEKS_PER_YEAR = 52
+
+FATIGUE_PER_WEEK = 5        # 주당 누적 피로
+FATIGUE_BURNOUT = 70        # 이 이상이면 사기가 깎이기 시작
+MORALE_DROP_BURNOUT = 4     # 번아웃 상태의 주당 사기 감소
+MORALE_RECOVER = 2          # 정상 근무 주의 사기 회복
+MORALE_DROP_UNPAID = 25     # 급여 미지급 시 사기 폭락
+
+TOXIC_THRESHOLD = 15        # 정신병 수치가 이 이상이면 주변에 악영향
+TOXIC_MORALE_DROP = 2       # 빌런 1명당 다른 직원의 주당 사기 감소
+
+
 # 인메모리 게임 글로벌 상태 관리자
 class GameState:
     def __init__(self):
@@ -54,6 +68,62 @@ class GameState:
         # 4. 채용된 직원 객체 매핑 (tag -> Developer 인스턴스)
         self.hired_employees = {}
 
+        # 5. 시간 진행 상태
+        self.week = 1
+        self.is_bankrupt = False
+
+    def weekly_payroll(self):
+        """재직자 전원의 주당 급여 합계 (연봉 / 52)."""
+        return sum(int(dev.current_salary / WEEKS_PER_YEAR)
+                   for dev in self.hired_employees.values())
+
+    def advance_week(self):
+        """1주 진행: 급여 지출 → 사기·피로 변동. 발생한 사건 목록을 반환한다."""
+        events = []
+        payroll = self.weekly_payroll()
+
+        # 1. 급여 지급 (자금이 모자라면 미지급 처리)
+        paid = payroll <= self.company.funds
+        if paid:
+            self.company.funds -= payroll
+            if payroll:
+                events.append(f"급여 ${payroll:,} 지급 (재직자 {len(self.hired_employees)}명)")
+        else:
+            events.append(
+                f"자금 부족으로 급여 ${payroll:,}를 지급하지 못했습니다. 팀의 사기가 급락합니다.")
+
+        # 2. 팀 내 유해 인원 수 (자기 자신은 제외하고 계산한다)
+        toxic_tags = {tag for tag, dev in self.hired_employees.items()
+                      if dev.psychological_issue >= TOXIC_THRESHOLD}
+        if toxic_tags and len(self.hired_employees) > 1:
+            events.append(f"팀 분위기를 해치는 인원 {len(toxic_tags)}명이 주변 사기를 갉아먹고 있습니다.")
+
+        # 3. 직원별 상태 변동
+        burnout_names = []
+        for tag, dev in self.hired_employees.items():
+            dev.fatigue = min(100, dev.fatigue + FATIGUE_PER_WEEK)
+
+            delta = MORALE_RECOVER if paid else -MORALE_DROP_UNPAID
+            if dev.fatigue >= FATIGUE_BURNOUT:
+                delta -= MORALE_DROP_BURNOUT
+                burnout_names.append(f"{dev.first_name} {dev.last_name}")
+
+            others_toxic = len(toxic_tags - {tag})
+            delta -= others_toxic * TOXIC_MORALE_DROP
+
+            dev.morale = max(0, min(100, dev.morale + delta))
+
+        if burnout_names:
+            events.append(f"번아웃 위험: {', '.join(burnout_names)}")
+
+        # 4. 파산 판정
+        if not paid:
+            self.is_bankrupt = True
+            events.append("회사가 급여를 감당하지 못하는 상태입니다. (파산)")
+
+        self.week += 1
+        return {"payroll": payroll, "paid": paid, "events": events}
+
     def generate_new_candidates(self, count):
         for _ in range(count):
             dev = Developer(True, self.company.reputation)
@@ -76,6 +146,11 @@ async def get_state():
             "reputation": game_state.company.reputation,
             "funds": game_state.company.funds,
             "staff_count": game_state.company.staffNums
+        },
+        "time": {
+            "week": game_state.week,
+            "weekly_payroll": game_state.weekly_payroll(),
+            "is_bankrupt": game_state.is_bankrupt
         },
         "desks": game_state.desks,
         "candidates": [
@@ -237,16 +312,18 @@ async def hire_developer(req: HireRequest):
         raise HTTPException(status_code=400, detail="유효하지 않은 책상 ID입니다.")
     if target_desk["developer_tag"] is not None:
         raise HTTPException(status_code=400, detail="해당 책상에는 이미 다른 직원이 배치되어 있습니다.")
-        
-    # 자금 부족 검증
-    if game_state.company.funds < req.salary:
-        raise HTTPException(status_code=400, detail="회사의 보유 자금이 부족하여 채용할 수 없습니다.")
-        
-    # 자금 차감
-    game_state.company.funds -= req.salary
-    
+
+    # 급여는 채용 시 일시불로 빠지지 않고 매주 턴 진행에서 지출된다.
+    # 여기서는 합의된 연봉을 계약 조건으로 확정만 한다.
+    weekly_cost = int(req.salary / WEEKS_PER_YEAR)
+    if game_state.company.funds < weekly_cost:
+        raise HTTPException(
+            status_code=400,
+            detail="첫 주 급여도 지급할 수 없는 자금 상태입니다.")
+
     # 지원자 풀에서 제거하고 직원 풀에 등록
     dev = game_state.candidates.pop(req.developer_tag)
+    dev.current_salary = req.salary
     game_state.conversation_histories.pop(req.developer_tag, None)
     
     target_desk["developer_tag"] = dev.tag
@@ -266,7 +343,35 @@ async def hire_developer(req: HireRequest):
             "name": f"{dev.first_name} {dev.last_name}"
         },
         "desk_id": req.desk_id,
-        "remaining_funds": game_state.company.funds
+        "remaining_funds": game_state.company.funds,
+        "weekly_cost": weekly_cost
+    }
+
+@app.post("/api/advance_week")
+async def advance_week():
+    """1주를 진행하고 급여 지출과 직원 상태 변동을 적용하는 API"""
+    if game_state.is_bankrupt:
+        raise HTTPException(status_code=400, detail="이미 파산한 회사입니다. 더 진행할 수 없습니다.")
+
+    result = game_state.advance_week()
+
+    return {
+        "status": "success",
+        "week": game_state.week,
+        "payroll": result["payroll"],
+        "paid": result["paid"],
+        "funds": game_state.company.funds,
+        "is_bankrupt": game_state.is_bankrupt,
+        "events": result["events"],
+        "employees": [
+            {
+                "tag": dev.tag,
+                "name": f"{dev.first_name} {dev.last_name}",
+                "fatigue": dev.fatigue,
+                "morale": dev.morale
+            }
+            for dev in game_state.hired_employees.values()
+        ]
     }
 
 # 프론트엔드 정적 파일 서빙 등록
