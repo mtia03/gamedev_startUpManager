@@ -73,6 +73,446 @@ function resizeCanvas() {
 
 // REST API 호출 - 게임 상태 받아오기
 // ----------------------------------------------------
+// 👥 팀 & 기록
+// ----------------------------------------------------
+const LOG_KINDS = [
+    { key: '', label: '전체' },
+    { key: 'business', label: '사업' },
+    { key: 'reward', label: '보상' },
+    { key: 'salary', label: '급여' },
+    { key: 'morale', label: '사기' },
+    { key: 'resign', label: '이탈' },
+    { key: 'hire', label: '채용' },
+    { key: 'danger', label: '위험' }
+];
+
+let teamTab = 'staff';
+let logKind = '';
+let logRows = [];
+
+async function openTeamModal() {
+    document.getElementById('team-modal').classList.remove('d-none');
+    await refreshTeam();
+}
+
+function closeTeamModal() {
+    document.getElementById('team-modal').classList.add('d-none');
+}
+
+async function refreshTeam() {
+    await fetchGameState();
+    if (teamTab === 'log') {
+        const url = '/api/events?limit=200' + (logKind ? `&kind=${logKind}` : '');
+        try {
+            const r = await fetch(url);
+            logRows = r.ok ? (await r.json()).events : [];
+        } catch (e) {
+            logRows = [];
+        }
+    }
+    renderTeam();
+}
+
+function renderTeam() {
+    document.querySelectorAll('.team-tab').forEach(el => {
+        el.classList.toggle('active', el.dataset.tab === teamTab);
+    });
+    const body = document.getElementById('team-body');
+    body.innerHTML = teamTab === 'staff' ? renderStaffList() : renderLogList();
+    wireTeamPanel();
+}
+
+function renderStaffList() {
+    const staff = Object.values(gameState.hiredEmployees);
+    if (!staff.length) {
+        return '<p class="biz-empty">재직 중인 직원이 없습니다.</p>';
+    }
+    const payroll = gameState.time ? gameState.time.weekly_payroll : 0;
+    return `
+        <p class="biz-sub" style="margin-bottom:14px;">
+            재직 ${staff.length}명 · 주당 인건비 합계 $${payroll.toLocaleString()}
+        </p>
+        ${staff.map(renderStaffCard).join('')}
+    `;
+}
+
+function renderStaffCard(d) {
+    const traits = d.traits.map(t =>
+        `<span class="trait ${t.tone}" title="${t.desc}">${t.label}</span>`).join('');
+
+    const stats = Object.entries(d.stats).map(([f, v]) => `
+        <div class="stat-cell ${f === d.main_field ? 'main' : ''}">
+            <span class="k">${FIELD_LABEL[f]}</span>
+            <span class="v">${v}</span>
+        </div>`).join('');
+
+    const work = d.assignment
+        ? `${d.assignment.business} · ${d.assignment.task}`
+        : '대기 중 (배치된 업무 없음)';
+
+    return `
+        <div class="staff-card">
+            <div class="staff-top">
+                <div>
+                    <div class="staff-name">${d.name}
+                        <span class="biz-tier">${d.education}</span>
+                    </div>
+                    <div class="staff-sub">
+                        ${FIELD_LABEL[d.main_field]} 전문 · CA ${d.CA} / PA ${d.PA}
+                    </div>
+                    <div class="staff-sub">담당: ${work}</div>
+                </div>
+                <div>
+                    <div class="staff-salary">
+                        $${d.weekly_salary.toLocaleString()}
+                        <small>주급 · 연 $${d.annual_salary.toLocaleString()}</small>
+                    </div>
+                </div>
+            </div>
+
+            <div class="trait-row">${traits}</div>
+
+            <div class="gauge-row">
+                <div class="gauge">
+                    <label>사기 ${d.morale}</label>
+                    <div class="gauge-bar"><div class="gauge-fill morale" style="width:${d.morale}%"></div></div>
+                </div>
+                <div class="gauge">
+                    <label>피로 ${d.fatigue}</label>
+                    <div class="gauge-bar"><div class="gauge-fill fatigue" style="width:${d.fatigue}%"></div></div>
+                </div>
+                <div class="gauge">
+                    <label>생산성 ${Math.round(d.productivity * 100)}%</label>
+                    <div class="gauge-bar"><div class="gauge-fill prod" style="width:${d.productivity * 100}%"></div></div>
+                </div>
+            </div>
+
+            <div class="stat-row">${stats}</div>
+
+            <div class="staff-actions">
+                <button class="btn btn-secondary btn-sm" data-fire="${d.tag}" data-name="${d.name}">해고</button>
+            </div>
+        </div>
+    `;
+}
+
+function renderLogList() {
+    const filters = LOG_KINDS.map(k =>
+        `<button class="log-filter ${logKind === k.key ? 'active' : ''}"
+                 data-kind="${k.key}">${k.label}</button>`).join('');
+
+    const rows = logRows.length
+        ? logRows.map(e => `
+            <div class="log-item ${e.kind}">
+                <span class="log-week">${e.week}주</span>
+                <span>${e.text}</span>
+            </div>`).join('')
+        : '<p class="biz-empty">해당하는 기록이 없습니다.</p>';
+
+    return `<div class="log-filters">${filters}</div>${rows}`;
+}
+
+function wireTeamPanel() {
+    document.querySelectorAll('[data-kind]').forEach(el => {
+        el.onclick = () => { logKind = el.dataset.kind; refreshTeam(); };
+    });
+    document.querySelectorAll('[data-fire]').forEach(el => {
+        el.onclick = async () => {
+            if (!confirm(`${el.dataset.name} 님을 해고할까요? 퇴직금 4주치가 지급됩니다.`)) return;
+            const r = await postJson('/api/fire', { developer_tag: el.dataset.fire });
+            if (r) {
+                showToast(`${r.name} 님을 해고했습니다. (퇴직금 $${r.severance.toLocaleString()})`);
+                await refreshTeam();
+            }
+        };
+    });
+}
+
+// ----------------------------------------------------
+// 📋 사업 관리
+// ----------------------------------------------------
+const FIELD_LABEL = {
+    FE: '프론트', BE: '백엔드', Mobile: '모바일',
+    AI: 'AI', Ops: '인프라', UIUX: 'UI/UX'
+};
+const STATUS_LABEL = {
+    locked: '잠김', ready: '착수 가능', active: '진행 중', done: '완료'
+};
+
+let bizData = { offered: [], active: [], completed: [], busy_developers: [] };
+let bizTab = 'active';
+// 화면에서 고른 배치 인원 (task_tag -> [dev_tag])
+let pendingAssign = {};
+
+async function openBizModal() {
+    document.getElementById('biz-modal').classList.remove('d-none');
+    await refreshBusinesses();
+}
+
+function closeBizModal() {
+    document.getElementById('biz-modal').classList.add('d-none');
+}
+
+async function refreshBusinesses() {
+    try {
+        const response = await fetch('/api/businesses');
+        if (!response.ok) throw new Error('사업 목록을 불러올 수 없습니다.');
+        bizData = await response.json();
+        renderBusinesses();
+    } catch (error) {
+        document.getElementById('biz-body').innerHTML =
+            `<p class="biz-empty">${error.message}</p>`;
+    }
+}
+
+function renderBusinesses() {
+    document.querySelectorAll('.biz-tab').forEach(el => {
+        el.classList.toggle('active', el.dataset.tab === bizTab);
+    });
+
+    const body = document.getElementById('biz-body');
+    const list = bizData[bizTab] || [];
+    if (!list.length) {
+        const msg = { active: '진행 중인 사업이 없습니다. 수주 대기 탭에서 사업을 수주하세요.',
+                      offered: '수주 가능한 사업이 없습니다.',
+                      completed: '아직 완료한 사업이 없습니다.' }[bizTab];
+        body.innerHTML = `<p class="biz-empty">${msg}</p>`;
+        return;
+    }
+    body.innerHTML = list.map(b => renderBizCard(b)).join('');
+    wireBizCard();
+}
+
+function renderBizCard(b) {
+    const fields = [...new Set(b.tasks.map(t => t.field))]
+        .map(f => FIELD_LABEL[f]).join(' · ');
+    const done = b.tasks.filter(t => t.status === 'done').length;
+
+    let actions = '';
+    if (bizTab === 'offered') {
+        actions = `<button class="btn btn-success btn-sm" data-accept="${b.tag}">수주하기</button>`;
+    } else if (bizTab === 'active') {
+        actions = `<button class="btn btn-secondary btn-sm" data-abandon="${b.tag}">사업 포기</button>`;
+    }
+
+    const rewardLine = bizTab === 'completed'
+        ? `$${b.payout.toLocaleString()} <span class="biz-sub">/ $${b.reward.toLocaleString()}</span>`
+        : `$${b.reward.toLocaleString()}`;
+
+    return `
+        <div class="biz-card">
+            <div class="biz-card-top">
+                <div>
+                    <div class="biz-title">
+                        <span class="biz-tier">${b.tier}</span>${b.name}
+                    </div>
+                    <div class="biz-sub">
+                        ${b.tier_name} · 업무 ${b.tasks.length}개 (완료 ${done}) ·
+                        목표 ${b.target_weeks}주 · 권장 ${b.crew}명 · 필요 분야 ${fields}
+                    </div>
+                    <div class="biz-sub">명성 +${b.reputation_gain.toLocaleString()}</div>
+                </div>
+                <div>
+                    <div class="biz-reward">${rewardLine}</div>
+                    <div style="margin-top:8px; text-align:right;">${actions}</div>
+                </div>
+            </div>
+            ${b.tasks.map(t => renderTask(b, t)).join('')}
+        </div>
+    `;
+}
+
+function renderTask(b, t) {
+    const pct = Math.round(t.ratio * 100);
+    const gradeText = t.grade
+        ? ` · 결과 <strong>${t.grade_label}</strong>`
+        : '';
+    const reqNames = t.requires.length
+        ? `선행 업무 ${t.requires.length}개 완료 필요`
+        : '선행 없음';
+
+    let panel = '';
+    if (bizTab === 'active' && (t.status === 'ready' || t.status === 'active')) {
+        panel = renderAssignBox(b, t);
+    }
+
+    return `
+        <div class="task-row">
+            <div class="task-head">
+                <span class="task-field">${FIELD_LABEL[t.field]}</span>
+                <span class="task-name">${t.name}</span>
+                <span class="task-status ${t.status}">${STATUS_LABEL[t.status]}</span>
+            </div>
+            <div class="task-bar"><div class="task-bar-fill" style="width:${pct}%"></div></div>
+            <div class="task-meta">
+                <span>${Math.round(t.progress)} / ${t.required} 공수 (${pct}%)</span>
+                <span>${reqNames}${gradeText}</span>
+            </div>
+            ${panel}
+        </div>
+    `;
+}
+
+function renderAssignBox(b, t) {
+    const chosen = pendingAssign[t.tag] || t.assigned;
+    const busy = new Set(bizData.busy_developers);
+    t.assigned.forEach(tag => busy.delete(tag));   // 이 업무 인원은 선택 가능
+
+    const chips = Object.values(gameState.hiredEmployees).map(d => {
+        const isBusy = busy.has(d.tag);
+        const on = chosen.includes(d.tag);
+        const isMain = d.main_field === t.field;
+        return `
+            <div class="assign-chip ${on ? 'on' : ''} ${isBusy ? 'busy' : ''}"
+                 data-pick="${t.tag}" data-dev="${d.tag}" data-busy="${isBusy}">
+                <span>${d.name}</span>
+                <span class="${isMain ? 'main-tag' : ''}">
+                    ${FIELD_LABEL[d.main_field]} ${d.stats[t.field]}
+                </span>
+            </div>`;
+    }).join('');
+
+    const label = t.status === 'active' ? '배치 변경' : '배치 확정 후 착수';
+    return `
+        <div class="assign-box">
+            <div class="assign-list">${chips || '<span class="biz-sub">재직 중인 직원이 없습니다.</span>'}</div>
+            <div class="assign-actions">
+                <button class="btn btn-primary btn-sm"
+                        data-assign="${t.tag}" data-biz="${b.tag}">${label}</button>
+            </div>
+            <div class="biz-info" id="info-${t.tag}">
+                주분야가 맞는 인원을 넣어야 속도가 제대로 납니다. 다른 분야는 기여가 1/4로 줄어듭니다.
+            </div>
+        </div>
+    `;
+}
+
+function wireBizCard() {
+    document.querySelectorAll('[data-pick]').forEach(el => {
+        el.onclick = () => {
+            if (el.dataset.busy === 'true') {
+                showToast('⚠️ 다른 업무에 배치된 인원입니다.');
+                return;
+            }
+            const taskTag = el.dataset.pick;
+            const devTag = el.dataset.dev;
+            const cur = pendingAssign[taskTag]
+                || [...(findTask(taskTag)?.assigned || [])];
+            const i = cur.indexOf(devTag);
+            if (i >= 0) cur.splice(i, 1); else cur.push(devTag);
+            pendingAssign[taskTag] = cur;
+            renderBusinesses();
+        };
+    });
+
+    document.querySelectorAll('[data-accept]').forEach(el => {
+        el.onclick = () => bizAction('/api/businesses/accept',
+            { business_tag: el.dataset.accept }, '사업을 수주했습니다.');
+    });
+    document.querySelectorAll('[data-abandon]').forEach(el => {
+        el.onclick = () => {
+            if (!confirm('정말 포기할까요? 위약금과 명성 하락이 있습니다.')) return;
+            bizAction('/api/businesses/abandon',
+                { business_tag: el.dataset.abandon }, '사업을 포기했습니다.');
+        };
+    });
+    document.querySelectorAll('[data-assign]').forEach(el => {
+        el.onclick = () => assignAndStart(el.dataset.biz, el.dataset.assign);
+    });
+}
+
+function findTask(taskTag) {
+    for (const b of bizData.active) {
+        const t = b.tasks.find(x => x.tag === taskTag);
+        if (t) return t;
+    }
+    return null;
+}
+
+async function bizAction(url, body, okMessage) {
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const data = await response.json();
+        if (!response.ok) {
+            showToast('⚠️ ' + (data.detail || '요청에 실패했습니다.'));
+            return null;
+        }
+        await fetchGameState();
+        await refreshBusinesses();
+        if (okMessage) showToast('✅ ' + okMessage);
+        return data;
+    } catch (error) {
+        showToast('❌ ' + error.message);
+        return null;
+    }
+}
+
+// 배치를 저장하고, 아직 시작 전이면 착수까지 진행
+async function assignAndStart(bizTag, taskTag) {
+    const devs = pendingAssign[taskTag] || findTask(taskTag)?.assigned || [];
+    if (!devs.length) {
+        showToast('⚠️ 배치할 인원을 선택하세요.');
+        return;
+    }
+
+    const res = await bizAction('/api/businesses/assign',
+        { business_tag: bizTag, task_tag: taskTag, developer_tags: devs }, null);
+    if (!res) return;
+
+    const info = document.getElementById('info-' + taskTag);
+    if (info) {
+        info.innerHTML = `성공 확률 <strong>${Math.round(res.success_probability * 100)}%</strong>
+            · 주당 처리량 <strong>${res.weekly_throughput}</strong>`;
+    }
+
+    const task = findTask(taskTag);
+    if (task && task.status === 'active') {
+        showToast('✅ 배치를 변경했습니다.');
+        return;
+    }
+
+    // 착수 시도. 게이트 미달이면 사유를 보여주고 강행 여부를 묻는다
+    let start = await postJson('/api/businesses/start_task',
+        { business_tag: bizTag, task_tag: taskTag, force: false });
+    if (start && start.status === 'gate_failed') {
+        const msg = '요구 조건 미충족:\n\n' + start.gate_reasons.join('\n')
+            + `\n\n강행하면 성공 확률이 ${Math.round(start.penalty * 100)}%로 줄어듭니다. 진행할까요?`;
+        if (!confirm(msg)) return;
+        start = await postJson('/api/businesses/start_task',
+            { business_tag: bizTag, task_tag: taskTag, force: true });
+    }
+
+    if (start && start.status === 'success') {
+        delete pendingAssign[taskTag];
+        showToast(`🚀 업무 착수 (성공 확률 ${Math.round(start.success_probability * 100)}%)`);
+    }
+    await refreshBusinesses();
+}
+
+async function postJson(url, body) {
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const data = await response.json();
+        if (!response.ok) {
+            showToast('⚠️ ' + (data.detail || '요청에 실패했습니다.'));
+            return null;
+        }
+        return data;
+    } catch (error) {
+        showToast('❌ ' + error.message);
+        return null;
+    }
+}
+
+// ----------------------------------------------------
 // 🚀 시작 세팅 화면
 // ----------------------------------------------------
 function showSetupScreen() {
@@ -378,6 +818,14 @@ async function advanceWeek(rest = false) {
 
         await fetchGameState();
 
+        // 열려 있는 모달은 진행 상황도 같이 갱신
+        if (!document.getElementById('biz-modal').classList.contains('d-none')) {
+            await refreshBusinesses();
+        }
+        if (!document.getElementById('team-modal').classList.contains('d-none')) {
+            await refreshTeam();
+        }
+
         const messages = [`🗓️ ${data.week}주차 시작`, ...data.events];
         if (data.is_bankrupt) messages.push('💀 게임 오버 — 회사가 파산했습니다.');
         showToastQueue(messages);
@@ -407,6 +855,32 @@ function setupEventListeners() {
     // 주차 진행
     document.getElementById('advance-week-btn').addEventListener('click', () => advanceWeek(false));
     document.getElementById('rest-week-btn').addEventListener('click', () => advanceWeek(true));
+
+    // 사업 관리 모달
+    document.getElementById('open-biz-btn').addEventListener('click', openBizModal);
+    document.getElementById('biz-close-btn').addEventListener('click', closeBizModal);
+    document.getElementById('biz-modal').addEventListener('click', (e) => {
+        if (e.target.id === 'biz-modal') closeBizModal();
+    });
+    document.querySelectorAll('.biz-tab').forEach(el => {
+        el.addEventListener('click', () => {
+            bizTab = el.dataset.tab;
+            renderBusinesses();
+        });
+    });
+
+    // 팀 & 기록 모달
+    document.getElementById('open-team-btn').addEventListener('click', openTeamModal);
+    document.getElementById('team-close-btn').addEventListener('click', closeTeamModal);
+    document.getElementById('team-modal').addEventListener('click', (e) => {
+        if (e.target.id === 'team-modal') closeTeamModal();
+    });
+    document.querySelectorAll('.team-tab').forEach(el => {
+        el.addEventListener('click', () => {
+            teamTab = el.dataset.tab;
+            refreshTeam();
+        });
+    });
     
     // 엔터키 채팅 전송 (쉬프트 제외)
     document.getElementById('chat-input').addEventListener('keydown', (e) => {

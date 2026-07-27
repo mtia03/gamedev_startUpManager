@@ -17,6 +17,7 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 # 기존 모델 모듈 임포트 (폴더 내 파일)
 from company_model import Corporate
 from developer_model import Developer
+import business_model as biz
 
 app = FastAPI()
 
@@ -50,6 +51,8 @@ MORALE_DROP_UNPAID = 25     # 급여 미지급 시 사기 폭락
 TOXIC_THRESHOLD = 15        # 정신병 수치가 이 이상이면 주변에 악영향
 TOXIC_MORALE_DROP = 2       # 빌런 1명당 다른 직원의 주당 사기 감소
 
+MAX_EVENT_LOG = 300         # 보관할 이벤트 로그 최대 건수
+
 # 휴식 주간: 그 주는 일을 시키지 않는다. 급여는 그대로 나간다.
 REST_FATIGUE_RECOVER = 20   # 휴식 시 회복하는 피로
 REST_MORALE_RECOVER = 5     # 휴식 시 회복하는 사기
@@ -74,6 +77,45 @@ DIFFICULTIES = {
     "hard":   {"label": "어려움", "funds": 180000, "reputation": 2000},
 }
 DEFAULT_DIFFICULTY = "normal"
+
+
+def traits_of(dev):
+    """직원의 현재 상태에서 드러나는 특성 목록.
+
+    수치를 직접 읽지 않아도 "누가 문제인지"가 보이도록 요약한다.
+    """
+    out = []
+    if dev.psychological_issue >= TOXIC_THRESHOLD:
+        out.append({"key": "toxic", "label": "팀 분위기 저해", "tone": "bad",
+                    "desc": "주변 동료의 사기를 매주 깎습니다."})
+    elif dev.psychological_issue >= 10:
+        out.append({"key": "unstable", "label": "불안정", "tone": "warn",
+                    "desc": "성격적 결함이 있어 언제든 문제가 될 수 있습니다."})
+
+    if dev.morale <= MORALE_QUIT_THRESHOLD:
+        out.append({"key": "quitting", "label": "퇴사 위험", "tone": "bad",
+                    "desc": "사기가 바닥이라 곧 회사를 떠날 수 있습니다."})
+    elif dev.morale < 50:
+        out.append({"key": "low_morale", "label": "사기 저하", "tone": "warn",
+                    "desc": "의욕이 떨어져 처리량이 줄어듭니다."})
+
+    if dev.fatigue >= FATIGUE_QUIT_LIMIT:
+        out.append({"key": "exhausted", "label": "탈진", "tone": "bad",
+                    "desc": "한계에 도달했습니다. 휴식이 시급합니다."})
+    elif dev.fatigue >= FATIGUE_BURNOUT:
+        out.append({"key": "burnout", "label": "번아웃", "tone": "warn",
+                    "desc": "피로 누적으로 사기가 계속 깎이고 있습니다."})
+
+    if max(dev.stats.values()) >= 45:
+        out.append({"key": "ace", "label": "에이스", "tone": "good",
+                    "desc": "상위 등급 사업의 착수 조건을 채울 수 있습니다."})
+    if dev.PA - dev.CA >= 50:
+        out.append({"key": "potential", "label": "대기만성", "tone": "good",
+                    "desc": "잠재력이 현재 능력보다 크게 높습니다."})
+    if not out:
+        out.append({"key": "stable", "label": "안정적", "tone": "good",
+                    "desc": "특별한 문제가 없습니다."})
+    return out
 
 
 def productivity(dev):
@@ -132,7 +174,106 @@ class GameState:
         # 5. 시간 진행 상태
         self.week = 1
         self.is_bankrupt = False
+
+        # 6. 이벤트 로그 (최근 것이 앞)
+        self.event_log = []
+
+        # 7. 사업 (수주 대기 목록 / 진행 중)
+        self.offered_businesses = []
+        self.active_businesses = []
+        self.completed_businesses = []
+        self.refresh_offers()
+
         self.is_started = True
+
+    # ── 이벤트 로그 ──────────────────────────────────────────
+    def log(self, text, kind="info"):
+        """이벤트를 기록한다. 토스트는 사라지지만 로그는 남는다."""
+        self.event_log.insert(0, {"week": self.week, "text": text, "kind": kind})
+        del self.event_log[MAX_EVENT_LOG:]
+
+    # ── 사업 ────────────────────────────────────────────────
+    def refresh_offers(self, count=3):
+        """명성과 감당 가능한 인원에 맞춰 수주 대기 목록을 채운다."""
+        while len(self.offered_businesses) < count:
+            tier = biz.pick_tier(self.company.reputation, len(self.desks))
+            self.offered_businesses.append(biz.Business(tier))
+
+    def find_business(self, tag):
+        for b in self.offered_businesses + self.active_businesses:
+            if b.tag == tag:
+                return b
+        return None
+
+    def busy_tags(self):
+        """이미 다른 업무에 전담 배치된 개발자 태그."""
+        out = set()
+        for b in self.active_businesses:
+            for t in b.tasks:
+                if t.status != "done":
+                    out.update(t.assigned)
+        return out
+
+    def devs_of(self, tags):
+        return [self.hired_employees[t] for t in tags if t in self.hired_employees]
+
+    def assignment_of(self, tag):
+        """직원이 현재 맡고 있는 업무 정보. 없으면 None."""
+        for b in self.active_businesses:
+            for t in b.tasks:
+                if tag in t.assigned and t.status != "done":
+                    return {"business": b.name, "task": t.name,
+                            "field": t.field, "status": t.status}
+        return None
+
+    def progress_businesses(self, rest):
+        """1주치 업무 진행. 휴식 주간에는 아무 업무도 진행되지 않는다."""
+        events = []
+        if rest:
+            if any(t.status == "active" for b in self.active_businesses for t in b.tasks):
+                events.append("휴식 주간이라 진행 중인 업무가 멈춰 있습니다.")
+            return events
+
+        for b in list(self.active_businesses):
+            for t in b.tasks:
+                if t.status != "active":
+                    continue
+                # 퇴사자는 배치에서 자동으로 빠진다
+                t.assigned = [tag for tag in t.assigned if tag in self.hired_employees]
+                devs = self.devs_of(t.assigned)
+                if not devs:
+                    events.append(f"[{b.name}] {t.name}: 배치 인원이 없어 진행이 멈췄습니다.")
+                    continue
+
+                t.progress += biz.throughput(devs, t.field, b.tier)
+                t.weeks_worked += 1
+
+                if t.progress >= t.required:
+                    p = biz.success_probability(devs, t, b)
+                    t.grade = biz.roll_grade(p)
+                    t.status = "done"
+                    t.assigned = []
+                    msg = (f"[{b.name}] {t.name} 완료 — {biz.GRADE_LABEL[t.grade]} "
+                           f"(성공 확률 {p * 100:.0f}%)")
+                    events.append(msg)
+                    self.log(msg, "danger" if t.grade == "fail" else "business")
+                    b.refresh_locks()
+
+            if b.is_complete():
+                payout = b.settle()
+                b.status = "completed"
+                b.completed_week = self.week
+                self.company.funds += payout
+                gained = int(b.reputation_gain * (payout / b.reward)) if b.reward else 0
+                self.company.reputation += gained
+                self.active_businesses.remove(b)
+                self.completed_businesses.append(b)
+                msg = f"사업 '{b.name}' 완료! 보상 ${payout:,} 수령, 명성 +{gained:,}"
+                events.append(msg)
+                self.log(msg, "reward")
+                self.refresh_offers()
+
+        return events
 
     def weekly_payroll(self):
         """재직자 전원의 주당 급여 합계 (연봉 / 52)."""
@@ -166,16 +307,23 @@ class GameState:
         if paid:
             self.company.funds -= payroll
             if payroll:
-                events.append(f"급여 ${payroll:,} 지급 (재직자 {len(self.hired_employees)}명)")
+                msg = f"급여 ${payroll:,} 지급 (재직자 {len(self.hired_employees)}명)"
+                events.append(msg)
+                self.log(msg, "salary")
         else:
-            events.append(
-                f"자금 부족으로 급여 ${payroll:,}를 지급하지 못했습니다. 팀의 사기가 급락합니다.")
+            msg = f"자금 부족으로 급여 ${payroll:,}를 지급하지 못했습니다. 팀의 사기가 급락합니다."
+            events.append(msg)
+            self.log(msg, "danger")
 
         # 2. 팀 내 유해 인원 수 (자기 자신은 제외하고 계산한다)
         toxic_tags = {tag for tag, dev in self.hired_employees.items()
                       if dev.psychological_issue >= TOXIC_THRESHOLD}
         if toxic_tags and len(self.hired_employees) > 1:
-            events.append(f"팀 분위기를 해치는 인원 {len(toxic_tags)}명이 주변 사기를 갉아먹고 있습니다.")
+            names = ", ".join(f"{self.hired_employees[t].first_name} "
+                              f"{self.hired_employees[t].last_name}" for t in toxic_tags)
+            msg = f"{names} 님이 주변 동료의 사기를 갉아먹고 있습니다."
+            events.append(msg)
+            self.log(msg, "morale")
 
         # 3. 직원별 상태 변동
         burnout_names = []
@@ -202,9 +350,14 @@ class GameState:
             dev.morale = max(0, min(100, dev.morale + delta))
 
         if burnout_names:
-            events.append(f"번아웃 위험: {', '.join(burnout_names)}")
+            msg = f"번아웃 위험: {', '.join(burnout_names)}"
+            events.append(msg)
+            self.log(msg, "morale")
 
-        # 4. 퇴사 판정 (사기가 낮을수록, 지쳐 있을수록 확률이 오른다)
+        # 4. 업무 진행 (퇴사 판정 전에 돌려서 이번 주 몫은 반영되게 한다)
+        events += self.progress_businesses(rest)
+
+        # 5. 퇴사 판정 (사기가 낮을수록, 지쳐 있을수록 확률이 오른다)
         for tag, dev in list(self.hired_employees.items()):
             if dev.morale >= MORALE_QUIT_THRESHOLD:
                 continue
@@ -213,12 +366,16 @@ class GameState:
                 chance += FATIGUE_QUIT_BONUS
             if random.random() < chance:
                 self.resign_employee(tag)
-                events.append(f"{dev.first_name} {dev.last_name} 님이 회사를 떠났습니다. (사기 {dev.morale})")
+                msg = f"{dev.first_name} {dev.last_name} 님이 회사를 떠났습니다. (사기 {dev.morale})"
+                events.append(msg)
+                self.log(msg, "resign")
 
-        # 5. 파산 판정
+        # 6. 파산 판정
         if not paid:
             self.is_bankrupt = True
-            events.append("회사가 급여를 감당하지 못하는 상태입니다. (파산)")
+            msg = "회사가 급여를 감당하지 못하는 상태입니다. (파산)"
+            events.append(msg)
+            self.log(msg, "danger")
 
         self.week += 1
         return {"payroll": payroll, "paid": paid, "events": events}
@@ -323,9 +480,15 @@ async def get_state():
                 "main_field": dev.main_field,
                 "stats": dev.stats,
                 "CA": dev.CA,
+                "PA": dev.PA,
                 "fatigue": dev.fatigue,
                 "morale": dev.morale,
-                "productivity": round(productivity(dev), 3)
+                "productivity": round(productivity(dev), 3),
+                "annual_salary": dev.current_salary,
+                "weekly_salary": int(dev.current_salary / WEEKS_PER_YEAR),
+                "psychological_issue": dev.psychological_issue,
+                "traits": traits_of(dev),
+                "assignment": game_state.assignment_of(tag)
             }
             for tag, dev in game_state.hired_employees.items()
         }
@@ -487,6 +650,10 @@ async def hire_developer(req: HireRequest):
     game_state.company.staff_tags.append(dev.tag)
     game_state.company.staffNums += 1
     
+    game_state.log(
+        f"{dev.first_name} {dev.last_name} [{dev.education}] 채용 "
+        f"(연봉 ${req.salary:,}, 주당 ${weekly_cost:,})", "hire")
+
     # 구직자 후보 자동 충전 (항상 3명 유지)
     game_state.generate_new_candidates(1)
     
@@ -499,6 +666,197 @@ async def hire_developer(req: HireRequest):
         "desk_id": req.desk_id,
         "remaining_funds": game_state.company.funds,
         "weekly_cost": weekly_cost
+    }
+
+class AcceptRequest(BaseModel):
+    business_tag: str
+
+class AssignRequest(BaseModel):
+    business_tag: str
+    task_tag: str
+    developer_tags: list[str]
+
+class StartTaskRequest(BaseModel):
+    business_tag: str
+    task_tag: str
+    force: bool = False
+
+@app.get("/api/events")
+async def list_events(limit: int = 100, kind: str = ""):
+    """이벤트 로그 조회. kind로 종류를 걸러낼 수 있다."""
+    require_started()
+    rows = game_state.event_log
+    if kind:
+        rows = [r for r in rows if r["kind"] == kind]
+    return {"events": rows[:limit], "total": len(game_state.event_log)}
+
+@app.get("/api/businesses")
+async def list_businesses():
+    """수주 대기 / 진행 중 / 완료된 사업 목록"""
+    require_started()
+    return {
+        "offered": [b.to_dict() for b in game_state.offered_businesses],
+        "active": [b.to_dict() for b in game_state.active_businesses],
+        "completed": [b.to_dict() for b in game_state.completed_businesses],
+        "busy_developers": sorted(game_state.busy_tags()),
+    }
+
+@app.post("/api/businesses/accept")
+async def accept_business(req: AcceptRequest):
+    """수주 대기 사업을 수주해 진행 중으로 옮긴다."""
+    require_started()
+    for b in game_state.offered_businesses:
+        if b.tag == req.business_tag:
+            b.status = "active"
+            b.started_week = game_state.week
+            game_state.offered_businesses.remove(b)
+            game_state.active_businesses.append(b)
+            game_state.refresh_offers()
+            game_state.log(f"사업 '{b.name}' [{b.tier}] 수주 — 보상 ${b.reward:,}", "business")
+            return {"status": "success", "business": b.to_dict()}
+    raise HTTPException(status_code=404, detail="수주 가능한 사업이 아닙니다.")
+
+@app.post("/api/businesses/assign")
+async def assign_task(req: AssignRequest):
+    """업무에 인원을 전담 배치한다. 이미 다른 업무에 배치된 인원은 거부된다."""
+    require_started()
+    b = game_state.find_business(req.business_tag)
+    if not b or b.status != "active":
+        raise HTTPException(status_code=404, detail="진행 중인 사업이 아닙니다.")
+    task = b.task(req.task_tag)
+    if not task:
+        raise HTTPException(status_code=404, detail="존재하지 않는 업무입니다.")
+    if task.status == "done":
+        raise HTTPException(status_code=400, detail="이미 완료된 업무입니다.")
+    if task.status == "locked":
+        raise HTTPException(status_code=400, detail="선행 업무가 끝나지 않았습니다.")
+
+    unknown = [t for t in req.developer_tags if t not in game_state.hired_employees]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"재직 중이 아닌 인원: {', '.join(unknown)}")
+
+    # 이 업무에 이미 배치된 인원은 중복으로 보지 않는다
+    busy = game_state.busy_tags() - set(task.assigned)
+    conflict = [t for t in req.developer_tags if t in busy]
+    if conflict:
+        names = [f"{game_state.hired_employees[t].first_name} "
+                 f"{game_state.hired_employees[t].last_name}" for t in conflict]
+        raise HTTPException(status_code=400,
+                            detail=f"다른 업무에 배치된 인원입니다: {', '.join(names)}")
+
+    task.assigned = list(dict.fromkeys(req.developer_tags))
+    devs = game_state.devs_of(task.assigned)
+    passed, reasons = biz.check_gate(devs, task, b.gate)
+    return {
+        "status": "success",
+        "task": task.to_dict(),
+        "gate_passed": passed,
+        "gate_reasons": reasons,
+        "success_probability": round(biz.success_probability(devs, task, b), 3),
+        "weekly_throughput": round(biz.throughput(devs, task.field, b.tier), 1),
+    }
+
+@app.post("/api/businesses/start_task")
+async def start_task(req: StartTaskRequest):
+    """배치를 확정하고 업무를 착수한다. 게이트 미충족이면 force=true로 강행할 수 있다."""
+    require_started()
+    b = game_state.find_business(req.business_tag)
+    if not b or b.status != "active":
+        raise HTTPException(status_code=404, detail="진행 중인 사업이 아닙니다.")
+    task = b.task(req.task_tag)
+    if not task:
+        raise HTTPException(status_code=404, detail="존재하지 않는 업무입니다.")
+    if task.status != "ready":
+        raise HTTPException(status_code=400, detail="착수할 수 있는 상태가 아닙니다.")
+    if not task.assigned:
+        raise HTTPException(status_code=400, detail="배치된 인원이 없습니다.")
+
+    devs = game_state.devs_of(task.assigned)
+    passed, reasons = biz.check_gate(devs, task, b.gate)
+    if not passed and not req.force:
+        return {
+            "status": "gate_failed",
+            "gate_reasons": reasons,
+            "penalty": biz.GATE_FAIL_PENALTY,
+            "detail": "요구 조건을 충족하지 못했습니다. 강행하면 성공 확률에 페널티가 붙습니다.",
+        }
+
+    task.status = "active"
+    return {
+        "status": "success",
+        "task": task.to_dict(),
+        "forced": not passed,
+        "success_probability": round(biz.success_probability(devs, task, b), 3),
+        "weekly_throughput": round(biz.throughput(devs, task.field, b.tier), 1),
+    }
+
+@app.post("/api/businesses/abandon")
+async def abandon_business(req: AcceptRequest):
+    """진행 중인 사업을 포기한다. 위약금과 명성 하락이 따른다.
+
+    인력으로 감당 못 하는 사업을 물었을 때 빠져나올 유일한 수단이다.
+    """
+    require_started()
+    b = game_state.find_business(req.business_tag)
+    if not b or b.status != "active":
+        raise HTTPException(status_code=404, detail="진행 중인 사업이 아닙니다.")
+
+    penalty = int(b.reward * biz.ABANDON_PENALTY_RATE)
+    rep_loss = int(b.reputation_gain * biz.ABANDON_REPUTATION_RATE)
+    game_state.company.funds -= penalty
+    game_state.company.reputation = max(0, game_state.company.reputation - rep_loss)
+
+    for t in b.tasks:
+        t.assigned = []
+    b.status = "abandoned"
+    game_state.active_businesses.remove(b)
+    game_state.completed_businesses.append(b)
+    game_state.refresh_offers()
+    game_state.log(
+        f"사업 '{b.name}' 포기 — 위약금 ${penalty:,}, 명성 -{rep_loss:,}", "danger")
+
+    return {
+        "status": "success",
+        "penalty": penalty,
+        "reputation_loss": rep_loss,
+        "funds": game_state.company.funds,
+        "reputation": game_state.company.reputation,
+    }
+
+class FireRequest(BaseModel):
+    developer_tag: str
+
+@app.post("/api/fire")
+async def fire_developer(req: FireRequest):
+    """직원을 해고한다. 4주치 급여를 퇴직금으로 지급하고 책상을 비운다.
+
+    필요한 필드의 인력을 새로 뽑으려면 자리를 비울 수단이 있어야 한다.
+    """
+    require_started()
+    if req.developer_tag not in game_state.hired_employees:
+        raise HTTPException(status_code=404, detail="재직 중인 직원이 아닙니다.")
+
+    dev = game_state.hired_employees[req.developer_tag]
+    severance = int(dev.current_salary / WEEKS_PER_YEAR) * 4
+    if game_state.company.funds < severance:
+        raise HTTPException(status_code=400,
+                            detail=f"퇴직금 ${severance:,}를 지급할 자금이 부족합니다.")
+
+    # 진행 중인 업무에서도 빠진다
+    for b in game_state.active_businesses:
+        for t in b.tasks:
+            if req.developer_tag in t.assigned:
+                t.assigned.remove(req.developer_tag)
+
+    game_state.company.funds -= severance
+    game_state.resign_employee(req.developer_tag)
+    game_state.log(
+        f"{dev.first_name} {dev.last_name} 님을 해고했습니다. (퇴직금 ${severance:,})", "resign")
+    return {
+        "status": "success",
+        "name": f"{dev.first_name} {dev.last_name}",
+        "severance": severance,
+        "funds": game_state.company.funds,
     }
 
 class AdvanceRequest(BaseModel):

@@ -69,6 +69,8 @@
                 </div>
                 <button class="btn-advance" id="advance-week-btn">다음 주로 &rarr;</button>
                 <button class="btn-advance btn-rest" id="rest-week-btn">휴식 주간 (피로 회복)</button>
+                <button class="btn-advance btn-biz" id="open-biz-btn">📋 사업 관리</button>
+                <button class="btn-advance btn-team" id="open-team-btn">👥 팀 &amp; 기록</button>
             </div>
 
             <!-- 구직 지원자 목록 -->
@@ -172,6 +174,45 @@
                 </div>
             </div>
         </aside>
+    </div>
+
+    <!-- 사업 관리 모달 -->
+    <div class="biz-modal d-none" id="biz-modal">
+        <div class="biz-panel">
+            <div class="biz-header">
+                <h2>사업 관리</h2>
+                <button class="biz-close" id="biz-close-btn">&times;</button>
+            </div>
+
+            <div class="biz-tabs">
+                <button class="biz-tab active" data-tab="active">진행 중</button>
+                <button class="biz-tab" data-tab="offered">수주 대기</button>
+                <button class="biz-tab" data-tab="completed">완료</button>
+            </div>
+
+            <div class="biz-body" id="biz-body">
+                <!-- JS로 채워짐 -->
+            </div>
+        </div>
+    </div>
+
+    <!-- 팀 & 기록 모달 -->
+    <div class="biz-modal d-none" id="team-modal">
+        <div class="biz-panel">
+            <div class="biz-header">
+                <h2>팀 &amp; 기록</h2>
+                <button class="biz-close" id="team-close-btn">&times;</button>
+            </div>
+
+            <div class="biz-tabs">
+                <button class="team-tab active" data-tab="staff">재직자</button>
+                <button class="team-tab" data-tab="log">이벤트 기록</button>
+            </div>
+
+            <div class="biz-body" id="team-body">
+                <!-- JS로 채워짐 -->
+            </div>
+        </div>
     </div>
 
     <!-- UI 토스트 메시지 -->
