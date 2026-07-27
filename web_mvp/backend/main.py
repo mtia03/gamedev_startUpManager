@@ -5,8 +5,14 @@ from pydantic import BaseModel
 import json
 import os
 import random
+from pathlib import Path
+from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+
+# 리포 루트의 .env를 읽는다 (서버는 web_mvp/backend에서 실행되므로 두 단계 위).
+# 이미 설정된 환경 변수가 있으면 그쪽이 우선한다.
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 # 기존 모델 모듈 임포트 (폴더 내 파일)
 from company_model import Corporate
@@ -25,7 +31,11 @@ app.add_middleware(
 
 # Gemini API 클라이언트 초기화
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-client = genai.Client(api_key=GEMINI_API_KEY)
+# 키가 없어도 서버는 뜨게 한다. genai.Client()는 빈 키를 받으면 즉시 예외를 던지므로
+# 생성 자체를 건너뛰고, 면접 대화 API가 호출될 때만 막는다.
+client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+if client is None:
+    print("[경고] GEMINI_API_KEY가 없습니다. 면접 대화를 제외한 기능만 동작합니다.")
 
 # ── 턴 루프 튜닝 파라미터 ──────────────────────────────────────
 # current_salary는 '연봉'으로 취급한다 (프론트 표기 및 채용 협상 기준과 동일).
@@ -55,6 +65,16 @@ FATIGUE_QUIT_BONUS = 0.15
 SALARY_PER_CA = 670
 SALARY_BASE = 19000
 
+# 난이도 프리셋: 시작 자금과 회사 평판을 결정한다.
+# 평판은 developer_model의 학력 가중치 구간(5000 / 10000)을 각각 넘도록 잡아서
+# 난이도마다 실제로 지원자 수준이 달라지게 한다.
+DIFFICULTIES = {
+    "easy":   {"label": "쉬움",   "funds": 500000, "reputation": 10000},
+    "normal": {"label": "보통",   "funds": 300000, "reputation": 6000},
+    "hard":   {"label": "어려움", "funds": 180000, "reputation": 2000},
+}
+DEFAULT_DIFFICULTY = "normal"
+
 
 def productivity(dev):
     """사기·피로가 반영된 개인 업무 효율 (0.0~1.0).
@@ -68,15 +88,31 @@ def productivity(dev):
 # 인메모리 게임 글로벌 상태 관리자
 class GameState:
     def __init__(self):
-        # 1. 플레이어의 스타트업 초기 생성 (직원 0명으로 초기화)
+        # 시작 화면에서 설정을 받기 전까지는 빈 상태로 둔다.
+        # 회사 객체 생성은 개발자를 대량 생성하는 무거운 작업이라 start()로 미룬다.
+        self.is_started = False
+        self.company = None
+        self.difficulty = DEFAULT_DIFFICULTY
+        self.desks = []
+        self.candidates = {}
+        self.conversation_histories = {}
+        self.hired_employees = {}
+        self.week = 1
+        self.is_bankrupt = False
+
+    def start(self, company_name, difficulty):
+        """시작 화면의 설정으로 게임을 초기화한다. 이미 진행 중이면 새 판으로 덮어쓴다."""
+        preset = DIFFICULTIES[difficulty]
+
+        # 1. 플레이어의 스타트업 생성 (직원 0명으로 초기화)
         self.company = Corporate(0)
-        self.company.corporateName = "드림 스타트업"
+        self.company.corporateName = company_name
         self.company.staffNums = 0
         self.company.staff_tags = []
-        self.company.reputation = 3000
-        # 시작 자금. 4명 팀(BD 기준 연봉 약 $70k)이면 대략 1년을 버틴다.
-        self.company.funds = 300000
-        
+        self.company.reputation = preset["reputation"]
+        self.company.funds = preset["funds"]
+        self.difficulty = difficulty
+
         # 2. 오피스 책상 레이아웃 (그리드 좌표)
         self.desks = [
             {"id": 1, "x": 1, "y": 1, "developer_tag": None},
@@ -84,18 +120,19 @@ class GameState:
             {"id": 3, "x": 3, "y": 1, "developer_tag": None},
             {"id": 4, "x": 3, "y": 3, "developer_tag": None},
         ]
-        
+
         # 3. 지원자 풀 (Pool)
         self.candidates = {}
         self.conversation_histories = {}  # dev_tag -> 대화 요약
         self.generate_new_candidates(3)
-        
+
         # 4. 채용된 직원 객체 매핑 (tag -> Developer 인스턴스)
         self.hired_employees = {}
 
         # 5. 시간 진행 상태
         self.week = 1
         self.is_bankrupt = False
+        self.is_started = True
 
     def weekly_payroll(self):
         """재직자 전원의 주당 급여 합계 (연봉 / 52)."""
@@ -198,11 +235,59 @@ class GameState:
 
 game_state = GameState()
 
+
+def require_started():
+    """게임이 시작되지 않았으면 요청을 거부한다."""
+    if not game_state.is_started:
+        raise HTTPException(status_code=409, detail="게임이 아직 시작되지 않았습니다.")
+
+
 # REST API 엔드포인트 정의
+class SetupRequest(BaseModel):
+    company_name: str
+    difficulty: str = DEFAULT_DIFFICULTY
+
+@app.get("/api/difficulties")
+async def get_difficulties():
+    """시작 화면에 표시할 난이도 목록"""
+    return {
+        "default": DEFAULT_DIFFICULTY,
+        "options": [
+            {"key": key, "label": v["label"],
+             "funds": v["funds"], "reputation": v["reputation"]}
+            for key, v in DIFFICULTIES.items()
+        ]
+    }
+
+@app.post("/api/setup")
+async def setup_game(req: SetupRequest):
+    """시작 화면의 설정으로 게임을 시작한다 (이미 진행 중이면 새 판으로 초기화)."""
+    name = req.company_name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="회사명을 입력해주세요.")
+    if len(name) > 30:
+        raise HTTPException(status_code=400, detail="회사명은 30자 이내로 입력해주세요.")
+    if req.difficulty not in DIFFICULTIES:
+        raise HTTPException(status_code=400, detail="유효하지 않은 난이도입니다.")
+
+    game_state.start(name, req.difficulty)
+    return {
+        "status": "success",
+        "company_name": name,
+        "difficulty": req.difficulty,
+        "funds": game_state.company.funds,
+        "reputation": game_state.company.reputation
+    }
+
 @app.get("/api/state")
 async def get_state():
     """게임 상태 조회 (회사 정보, 책상 배치, 구직 지원자 리스트)"""
+    if not game_state.is_started:
+        return {"is_started": False}
+
     return {
+        "is_started": True,
+        "difficulty": game_state.difficulty,
         "company": {
             "name": game_state.company.corporateName,
             "reputation": game_state.company.reputation,
@@ -253,6 +338,11 @@ class ChatRequest(BaseModel):
 @app.post("/api/chat")
 async def chat_with_candidate(req: ChatRequest):
     """구직 후보자와 LLM 면접 진행 API"""
+    require_started()
+    if client is None:
+        raise HTTPException(
+            status_code=503,
+            detail="GEMINI_API_KEY가 설정되지 않아 면접 대화를 사용할 수 없습니다.")
     dev_tag = req.developer_tag
     if dev_tag not in game_state.candidates:
         raise HTTPException(status_code=404, detail="지원자를 찾을 수 없습니다.")
@@ -361,6 +451,7 @@ class HireRequest(BaseModel):
 @app.post("/api/hire")
 async def hire_developer(req: HireRequest):
     """지정된 책상에 채용한 직원을 배치하는 API"""
+    require_started()
     if req.developer_tag not in game_state.candidates:
         raise HTTPException(status_code=404, detail="해당 지원자가 풀에 존재하지 않습니다.")
         
@@ -419,6 +510,7 @@ async def advance_week(req: AdvanceRequest = AdvanceRequest()):
 
     rest=true면 휴식 주간으로 처리한다 (피로 회복, 급여는 그대로 지출).
     """
+    require_started()
     if game_state.is_bankrupt:
         raise HTTPException(status_code=400, detail="이미 파산한 회사입니다. 더 진행할 수 없습니다.")
 

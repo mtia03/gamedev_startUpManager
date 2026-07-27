@@ -11,7 +11,28 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <div class="game-container">
+    <!-- 0. 시작 세팅 화면 (게임 시작 전까지 전체를 덮는다) -->
+    <div class="setup-screen" id="setup-screen">
+        <div class="setup-card">
+            <span class="setup-logo">🚀</span>
+            <h1>Dream Startup</h1>
+            <p class="setup-tagline">회사를 세우고, 개발자를 모아 제품을 만드세요.</p>
+
+            <label class="setup-label" for="setup-company-name">회사명</label>
+            <input type="text" id="setup-company-name" class="setup-input"
+                   maxlength="30" autocomplete="off" placeholder="예: Nexa Labs">
+
+            <label class="setup-label">난이도</label>
+            <div class="difficulty-list" id="difficulty-list">
+                <!-- JS로 채워짐 -->
+            </div>
+
+            <p class="setup-error d-none" id="setup-error"></p>
+            <button class="btn btn-success w-100" id="setup-start-btn">창업하기</button>
+        </div>
+    </div>
+
+    <div class="game-container d-none" id="game-container">
         <!-- 1. 좌측 사이드바: 회사 현황 및 지원자 리스트 -->
         <aside class="sidebar left-sidebar">
             <div class="logo-section">

@@ -1,12 +1,17 @@
 import json
 import csv
 import os
+from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+
+load_dotenv()
 
 # 1. API 설정
 # 키는 환경 변수 GEMINI_API_KEY로 주입합니다. (.env.example 참고)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+if not GEMINI_API_KEY:
+    raise SystemExit("GEMINI_API_KEY 환경 변수를 설정해주세요. (.env.example 참고)")
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 def generate_company_names(batch_size=50):

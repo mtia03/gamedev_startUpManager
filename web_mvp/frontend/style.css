@@ -568,6 +568,129 @@ textarea:focus {
     box-shadow: 0 6px 15px rgba(16, 185, 129, 0.4);
 }
 
+/* 시작 세팅 화면 */
+.setup-screen {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: var(--bg-dark);
+    background-image:
+        radial-gradient(at 20% 10%, rgba(139, 92, 246, 0.18) 0px, transparent 55%),
+        radial-gradient(at 80% 90%, rgba(59, 130, 246, 0.18) 0px, transparent 55%);
+    overflow-y: auto;
+}
+
+.setup-card {
+    width: 100%;
+    max-width: 420px;
+    padding: 36px 32px;
+    border-radius: var(--border-radius-lg);
+    background: var(--panel-bg);
+    border: 1px solid var(--panel-border);
+    backdrop-filter: blur(12px);
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
+    text-align: center;
+}
+
+.setup-logo {
+    font-size: 44px;
+    line-height: 1;
+}
+
+.setup-card h1 {
+    font-family: var(--font-title);
+    font-size: 30px;
+    margin-top: 10px;
+}
+
+.setup-tagline {
+    color: var(--text-secondary);
+    font-size: 13px;
+    margin-top: 8px;
+    margin-bottom: 28px;
+}
+
+.setup-label {
+    display: block;
+    text-align: left;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+
+.setup-input {
+    width: 100%;
+    padding: 12px 14px;
+    margin-bottom: 22px;
+    border-radius: var(--border-radius-md);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(0, 0, 0, 0.25);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    transition: border-color var(--transition-speed) ease;
+}
+
+.setup-input:focus {
+    outline: none;
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.setup-input::placeholder {
+    color: rgba(255, 255, 255, 0.25);
+}
+
+.difficulty-list {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin-bottom: 22px;
+}
+
+.difficulty-option {
+    padding: 12px 6px;
+    border-radius: var(--border-radius-md);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all var(--transition-speed) ease;
+}
+
+.difficulty-option:hover {
+    background: rgba(255, 255, 255, 0.09);
+}
+
+.difficulty-option.active {
+    border-color: var(--accent-purple);
+    background: rgba(139, 92, 246, 0.18);
+    box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.25);
+}
+
+.difficulty-option .difficulty-meta {
+    display: block;
+    margin-top: 5px;
+    font-size: 10px;
+    font-weight: 400;
+    color: var(--text-secondary);
+}
+
+.setup-error {
+    color: var(--neon-red);
+    font-size: 12px;
+    margin-bottom: 12px;
+    text-align: left;
+}
+
 /* 주차 진행 버튼 */
 .btn-advance {
     width: 100%;

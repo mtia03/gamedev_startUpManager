@@ -2,6 +2,7 @@
 let gameState = {
     company: null,
     time: null,
+    selectedDifficulty: 'normal',
     desks: [],
     candidates: [],
     hiredEmployees: {},
@@ -48,12 +49,12 @@ const COLORS = {
 
 // 페이지 로드 시 초기화
 window.addEventListener('load', () => {
-    resizeCanvas();
+    setupEventListeners();
+    loadDifficulties();
     fetchGameState().then(() => {
-        // 게임 루프 시작
+        // 게임 루프 시작 (시작 화면 단계에서도 돌지만 캔버스가 숨겨져 있어 무해하다)
         requestAnimationFrame(gameLoop);
     });
-    setupEventListeners();
 });
 
 window.addEventListener('resize', resizeCanvas);
@@ -71,12 +72,115 @@ function resizeCanvas() {
 }
 
 // REST API 호출 - 게임 상태 받아오기
+// ----------------------------------------------------
+// 🚀 시작 세팅 화면
+// ----------------------------------------------------
+function showSetupScreen() {
+    document.getElementById('setup-screen').classList.remove('d-none');
+    document.getElementById('game-container').classList.add('d-none');
+    document.getElementById('setup-company-name').focus();
+}
+
+function showGameScreen() {
+    document.getElementById('setup-screen').classList.add('d-none');
+    document.getElementById('game-container').classList.remove('d-none');
+    // 숨겨져 있는 동안 캔버스 크기가 0이었으므로 노출 직후 다시 계산한다
+    resizeCanvas();
+}
+
+// 난이도 목록을 백엔드에서 받아 버튼으로 렌더링
+async function loadDifficulties() {
+    try {
+        const response = await fetch('/api/difficulties');
+        if (!response.ok) throw new Error('난이도 목록을 불러올 수 없습니다.');
+        const data = await response.json();
+
+        gameState.selectedDifficulty = data.default;
+        const listEl = document.getElementById('difficulty-list');
+        listEl.innerHTML = '';
+
+        data.options.forEach(opt => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = `difficulty-option ${opt.key === data.default ? 'active' : ''}`;
+            btn.dataset.key = opt.key;
+            btn.innerHTML = `
+                ${opt.label}
+                <span class="difficulty-meta">
+                    자금 $${(opt.funds / 1000).toLocaleString()}k<br>평판 ${opt.reputation.toLocaleString()}
+                </span>
+            `;
+            btn.onclick = () => selectDifficulty(opt.key);
+            listEl.appendChild(btn);
+        });
+    } catch (error) {
+        showSetupError('난이도 목록을 불러오지 못했습니다: ' + error.message);
+    }
+}
+
+function selectDifficulty(key) {
+    gameState.selectedDifficulty = key;
+    document.querySelectorAll('.difficulty-option').forEach(el => {
+        el.classList.toggle('active', el.dataset.key === key);
+    });
+}
+
+function showSetupError(text) {
+    const el = document.getElementById('setup-error');
+    el.textContent = text;
+    el.classList.remove('d-none');
+}
+
+// 창업하기 → 게임 시작
+async function startGame() {
+    const btn = document.getElementById('setup-start-btn');
+    const name = document.getElementById('setup-company-name').value.trim();
+
+    if (!name) {
+        showSetupError('회사명을 입력해주세요.');
+        return;
+    }
+
+    btn.disabled = true;
+    try {
+        const response = await fetch('/api/setup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                company_name: name,
+                difficulty: gameState.selectedDifficulty
+            })
+        });
+        const data = await response.json();
+
+        if (!response.ok) {
+            showSetupError(data.detail || '게임을 시작할 수 없습니다.');
+            return;
+        }
+
+        document.getElementById('setup-error').classList.add('d-none');
+        await fetchGameState();
+        showToast(`🚀 ${data.company_name} 창업! 좋은 개발자를 모아보세요.`);
+    } catch (error) {
+        showSetupError('시작 실패: ' + error.message);
+    } finally {
+        btn.disabled = false;
+    }
+}
+
 async function fetchGameState() {
     try {
         const response = await fetch('/api/state');
         if (!response.ok) throw new Error('상태를 불러올 수 없습니다.');
         const data = await response.json();
-        
+
+        // 아직 창업 전이면 시작 화면을 띄우고 나머지는 건너뛴다
+        if (!data.is_started) {
+            showSetupScreen();
+            return;
+        }
+        showGameScreen();
+
         gameState.company = data.company;
         gameState.time = data.time;
         gameState.desks = data.desks;
@@ -288,6 +392,15 @@ async function advanceWeek(rest = false) {
 }
 
 function setupEventListeners() {
+    // 시작 세팅 화면
+    document.getElementById('setup-start-btn').addEventListener('click', startGame);
+    document.getElementById('setup-company-name').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            startGame();
+        }
+    });
+
     // 채팅 전송 버튼 클릭
     document.getElementById('chat-send-btn').addEventListener('click', sendChatMessage);
 
