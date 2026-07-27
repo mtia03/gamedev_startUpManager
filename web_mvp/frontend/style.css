@@ -591,6 +591,20 @@ textarea:focus {
     box-shadow: 0 6px 15px rgba(139, 92, 246, 0.4);
 }
 
+.btn-rest {
+    margin-top: 8px;
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-primary);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: none;
+    font-weight: 500;
+}
+
+.btn-rest:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.14);
+    box-shadow: none;
+}
+
 .btn-advance:disabled {
     background: rgba(255, 255, 255, 0.08);
     color: var(--text-secondary);

@@ -40,6 +40,30 @@ MORALE_DROP_UNPAID = 25     # 급여 미지급 시 사기 폭락
 TOXIC_THRESHOLD = 15        # 정신병 수치가 이 이상이면 주변에 악영향
 TOXIC_MORALE_DROP = 2       # 빌런 1명당 다른 직원의 주당 사기 감소
 
+# 휴식 주간: 그 주는 일을 시키지 않는다. 급여는 그대로 나간다.
+REST_FATIGUE_RECOVER = 20   # 휴식 시 회복하는 피로
+REST_MORALE_RECOVER = 5     # 휴식 시 회복하는 사기
+
+# 퇴사 판정: 사기가 이 아래로 떨어지면 매주 확률적으로 퇴사한다.
+MORALE_QUIT_THRESHOLD = 20  # 사기 0이면 확률 100%, 임계값이면 0%
+FATIGUE_QUIT_LIMIT = 90     # 이 이상 지친 상태면 퇴사 확률 가산
+FATIGUE_QUIT_BONUS = 0.15
+
+# 연봉 산출: CA(총 능력치)에 비례한다.
+# 실측 CA 평균 — None 34 / BD 76 / MD 120 / PhD 181
+# → 대략 None $42k / BD $70k / MD $99k / PhD $140k 가 되도록 맞춘 계수
+SALARY_PER_CA = 670
+SALARY_BASE = 19000
+
+
+def productivity(dev):
+    """사기·피로가 반영된 개인 업무 효율 (0.0~1.0).
+
+    scripts/project_balance.py의 morale_eff와 동일한 식이다.
+    프로젝트 시스템이 붙으면 이 값이 처리량에 그대로 곱해진다.
+    """
+    return (0.5 + 0.5 * dev.morale / 100) * (1 - 0.4 * dev.fatigue / 100)
+
 
 # 인메모리 게임 글로벌 상태 관리자
 class GameState:
@@ -50,7 +74,8 @@ class GameState:
         self.company.staffNums = 0
         self.company.staff_tags = []
         self.company.reputation = 3000
-        self.company.funds = 150000  # USD 150,000 (시작 자금)
+        # 시작 자금. 4명 팀(BD 기준 연봉 약 $70k)이면 대략 1년을 버틴다.
+        self.company.funds = 300000
         
         # 2. 오피스 책상 레이아웃 (그리드 좌표)
         self.desks = [
@@ -77,10 +102,27 @@ class GameState:
         return sum(int(dev.current_salary / WEEKS_PER_YEAR)
                    for dev in self.hired_employees.values())
 
-    def advance_week(self):
-        """1주 진행: 급여 지출 → 사기·피로 변동. 발생한 사건 목록을 반환한다."""
+    def resign_employee(self, tag):
+        """직원을 퇴사 처리하고 책상을 비운다."""
+        dev = self.hired_employees.pop(tag)
+        for desk in self.desks:
+            if desk["developer_tag"] == tag:
+                desk["developer_tag"] = None
+        if tag in self.company.staff_tags:
+            self.company.staff_tags.remove(tag)
+        self.company.staffNums = len(self.hired_employees)
+        return dev
+
+    def advance_week(self, rest=False):
+        """1주 진행: 급여 지출 → 사기·피로 변동 → 퇴사 판정.
+
+        rest=True면 그 주는 일을 시키지 않는다 (피로 회복, 급여는 그대로 지출).
+        발생한 사건 목록을 반환한다.
+        """
         events = []
         payroll = self.weekly_payroll()
+        if rest:
+            events.append("이번 주는 휴식 주간입니다. 팀이 재충전합니다.")
 
         # 1. 급여 지급 (자금이 모자라면 미지급 처리)
         paid = payroll <= self.company.funds
@@ -101,9 +143,18 @@ class GameState:
         # 3. 직원별 상태 변동
         burnout_names = []
         for tag, dev in self.hired_employees.items():
-            dev.fatigue = min(100, dev.fatigue + FATIGUE_PER_WEEK)
+            if rest:
+                dev.fatigue = max(0, dev.fatigue - REST_FATIGUE_RECOVER)
+            else:
+                dev.fatigue = min(100, dev.fatigue + FATIGUE_PER_WEEK)
 
-            delta = MORALE_RECOVER if paid else -MORALE_DROP_UNPAID
+            if not paid:
+                delta = -MORALE_DROP_UNPAID
+            elif rest:
+                delta = REST_MORALE_RECOVER
+            else:
+                delta = MORALE_RECOVER
+
             if dev.fatigue >= FATIGUE_BURNOUT:
                 delta -= MORALE_DROP_BURNOUT
                 burnout_names.append(f"{dev.first_name} {dev.last_name}")
@@ -116,7 +167,18 @@ class GameState:
         if burnout_names:
             events.append(f"번아웃 위험: {', '.join(burnout_names)}")
 
-        # 4. 파산 판정
+        # 4. 퇴사 판정 (사기가 낮을수록, 지쳐 있을수록 확률이 오른다)
+        for tag, dev in list(self.hired_employees.items()):
+            if dev.morale >= MORALE_QUIT_THRESHOLD:
+                continue
+            chance = (MORALE_QUIT_THRESHOLD - dev.morale) / MORALE_QUIT_THRESHOLD
+            if dev.fatigue >= FATIGUE_QUIT_LIMIT:
+                chance += FATIGUE_QUIT_BONUS
+            if random.random() < chance:
+                self.resign_employee(tag)
+                events.append(f"{dev.first_name} {dev.last_name} 님이 회사를 떠났습니다. (사기 {dev.morale})")
+
+        # 5. 파산 판정
         if not paid:
             self.is_bankrupt = True
             events.append("회사가 급여를 감당하지 못하는 상태입니다. (파산)")
@@ -128,7 +190,7 @@ class GameState:
         for _ in range(count):
             dev = Developer(True, self.company.reputation)
             # 스탯에 비례한 연봉 산출 (기본값)
-            dev.current_salary = int(dev.CA * 12 + 2500)
+            dev.current_salary = int(dev.CA * SALARY_PER_CA + SALARY_BASE)
             dev.disliked_people = []
             
             self.candidates[dev.tag] = dev
@@ -177,7 +239,8 @@ async def get_state():
                 "stats": dev.stats,
                 "CA": dev.CA,
                 "fatigue": dev.fatigue,
-                "morale": dev.morale
+                "morale": dev.morale,
+                "productivity": round(productivity(dev), 3)
             }
             for tag, dev in game_state.hired_employees.items()
         }
@@ -347,13 +410,19 @@ async def hire_developer(req: HireRequest):
         "weekly_cost": weekly_cost
     }
 
+class AdvanceRequest(BaseModel):
+    rest: bool = False
+
 @app.post("/api/advance_week")
-async def advance_week():
-    """1주를 진행하고 급여 지출과 직원 상태 변동을 적용하는 API"""
+async def advance_week(req: AdvanceRequest = AdvanceRequest()):
+    """1주를 진행하고 급여 지출과 직원 상태 변동을 적용하는 API
+
+    rest=true면 휴식 주간으로 처리한다 (피로 회복, 급여는 그대로 지출).
+    """
     if game_state.is_bankrupt:
         raise HTTPException(status_code=400, detail="이미 파산한 회사입니다. 더 진행할 수 없습니다.")
 
-    result = game_state.advance_week()
+    result = game_state.advance_week(rest=req.rest)
 
     return {
         "status": "success",
@@ -368,7 +437,8 @@ async def advance_week():
                 "tag": dev.tag,
                 "name": f"{dev.first_name} {dev.last_name}",
                 "fatigue": dev.fatigue,
-                "morale": dev.morale
+                "morale": dev.morale,
+                "productivity": round(productivity(dev), 3)
             }
             for dev in game_state.hired_employees.values()
         ]

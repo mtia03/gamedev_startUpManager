@@ -108,6 +108,7 @@ function updateUI() {
         const advanceBtn = document.getElementById('advance-week-btn');
         advanceBtn.disabled = gameState.time.is_bankrupt;
         advanceBtn.textContent = gameState.time.is_bankrupt ? '파산 — 진행 불가' : '다음 주로 →';
+        document.getElementById('rest-week-btn').disabled = gameState.time.is_bankrupt;
     }
 
     // 지원자 리스트 렌더링
@@ -250,14 +251,20 @@ function scrollToBottom() {
 }
 
 // 이벤트 리스너 세팅
-// 1주 진행 요청
-async function advanceWeek() {
+// 1주 진행 요청 (rest=true면 휴식 주간)
+async function advanceWeek(rest = false) {
     const btn = document.getElementById('advance-week-btn');
+    const restBtn = document.getElementById('rest-week-btn');
     if (btn.disabled) return;
 
     btn.disabled = true;
+    restBtn.disabled = true;
     try {
-        const response = await fetch('/api/advance_week', { method: 'POST' });
+        const response = await fetch('/api/advance_week', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ rest: rest })
+        });
         const data = await response.json();
 
         if (!response.ok) {
@@ -274,7 +281,9 @@ async function advanceWeek() {
         showToast('❌ 주차 진행 실패: ' + error.message);
     } finally {
         // 파산 여부는 갱신된 상태를 기준으로 updateUI가 다시 판단한다
-        if (!gameState.time || !gameState.time.is_bankrupt) btn.disabled = false;
+        const dead = gameState.time && gameState.time.is_bankrupt;
+        restBtn.disabled = !!dead;
+        if (!dead) btn.disabled = false;
     }
 }
 
@@ -283,7 +292,8 @@ function setupEventListeners() {
     document.getElementById('chat-send-btn').addEventListener('click', sendChatMessage);
 
     // 주차 진행
-    document.getElementById('advance-week-btn').addEventListener('click', advanceWeek);
+    document.getElementById('advance-week-btn').addEventListener('click', () => advanceWeek(false));
+    document.getElementById('rest-week-btn').addEventListener('click', () => advanceWeek(true));
     
     // 엔터키 채팅 전송 (쉬프트 제외)
     document.getElementById('chat-input').addEventListener('keydown', (e) => {
