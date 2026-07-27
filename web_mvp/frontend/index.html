@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>드림 스타트업 경영 매니저 MVP</title>
+    <!-- 구글 폰트 로드 -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="game-container">
+        <!-- 1. 좌측 사이드바: 회사 현황 및 지원자 리스트 -->
+        <aside class="sidebar left-sidebar">
+            <div class="logo-section">
+                <span class="logo-icon">🚀</span>
+                <h1>Dream Startup</h1>
+            </div>
+
+            <!-- 회사 현황 카드 -->
+            <div class="card company-status">
+                <h3>회사 현황</h3>
+                <div class="status-item">
+                    <span class="label">회사명</span>
+                    <span class="value" id="company-name">로딩 중...</span>
+                </div>
+                <div class="status-item">
+                    <span class="label">보유 자금</span>
+                    <span class="value text-success" id="company-funds">$0</span>
+                </div>
+                <div class="status-item">
+                    <span class="label">회사 평판</span>
+                    <span class="value text-warning" id="company-reputation">0</span>
+                </div>
+                <div class="status-item">
+                    <span class="label">현재 팀원</span>
+                    <span class="value" id="company-staff">0 명</span>
+                </div>
+            </div>
+
+            <!-- 구직 지원자 목록 -->
+            <div class="candidate-section">
+                <h3>인재 채용 풀 (LLM 면접 대기)</h3>
+                <div class="candidate-list" id="candidate-list">
+                    <!-- JS로 채워짐 -->
+                </div>
+            </div>
+        </aside>
+
+        <!-- 2. 중앙 영역: 쿼터뷰 게임 화면 -->
+        <main class="main-content">
+            <div class="canvas-header">
+                <h2>사무실 전경 (Isometric View)</h2>
+                <p id="instruction-text">인재 풀에서 지원자를 선택해 면접을 진행하고, 채용 후 빈 책상에 배치하세요.</p>
+            </div>
+            
+            <div class="canvas-container">
+                <canvas id="game-canvas"></canvas>
+                <!-- 책상 배치 모드일 때 뜨는 안내 가이드 -->
+                <div class="placement-overlay" id="placement-overlay">
+                    <div class="overlay-content">
+                        <span class="pulse-icon">📍</span>
+                        <p>화면의 반짝이는 <strong class="text-warning">빈 책상</strong> 중 하나를 클릭해 배치하세요.</p>
+                        <button class="btn btn-secondary btn-sm" id="cancel-placement-btn">배치 취소</button>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- 3. 우측 사이드바: 실시간 LLM 면접 채팅창 -->
+        <aside class="sidebar right-sidebar">
+            <div class="interview-header" id="interview-header-empty">
+                <div class="empty-state">
+                    <span class="icon">💬</span>
+                    <h3>면접 대상 없음</h3>
+                    <p>좌측 인재 채용 풀에서 개발자를 선택하면 실시간 대화 및 채용 제안을 진행할 수 있습니다.</p>
+                </div>
+            </div>
+
+            <div class="interview-active d-none" id="interview-active-panel">
+                <div class="developer-info-card">
+                    <div class="dev-header">
+                        <h3 id="interview-dev-name">James Miller</h3>
+                        <span class="badge" id="interview-dev-edu">Ph.D</span>
+                    </div>
+                    <div class="dev-details">
+                        <div class="detail-item">
+                            <span class="label">전문 분야</span>
+                            <span class="value" id="interview-dev-field">AI</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="label">현재 연봉</span>
+                            <span class="value" id="interview-dev-salary">$5,000</span>
+                        </div>
+                    </div>
+                    
+                    <!-- 능력치 게이지 -->
+                    <div class="stats-bars">
+                        <div class="stat-bar-item">
+                            <div class="stat-label">
+                                <span>종합 능력치 (CA)</span>
+                                <span id="stat-ca-val">0</span>
+                            </div>
+                            <div class="bar-bg">
+                                <div class="bar-fill ca-fill" style="width: 0%" id="stat-ca-bar"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 실시간 채팅창 -->
+                <div class="chat-container">
+                    <div class="chat-messages" id="chat-messages">
+                        <!-- 대화 로그 -->
+                    </div>
+                    
+                    <!-- LLM 실시간 상태 오버레이 -->
+                    <div class="llm-indicator d-none" id="llm-typing-indicator">
+                        <span class="dot"></span>
+                        <span class="dot"></span>
+                        <span class="dot"></span>
+                        <span class="indicator-text">지원자가 제안을 검토하는 중...</span>
+                    </div>
+
+                    <!-- 채팅 입력 -->
+                    <div class="chat-input-area">
+                        <textarea id="chat-input" placeholder="연봉을 제안하거나 질문을 건네보세요... (예: 우리 회사에 연봉 5500불로 들어오겠나?)"></textarea>
+                        <button class="btn btn-primary" id="chat-send-btn">전송</button>
+                    </div>
+                </div>
+
+                <!-- 채용 제안 영역 -->
+                <div class="hiring-decision-area">
+                    <div class="decision-status" id="decision-status-box">
+                        <span class="status-dot"></span>
+                        <span id="decision-status-text">협상 진행 중...</span>
+                    </div>
+                    <button class="btn btn-success w-100 d-none" id="hire-confirm-btn">채용 및 책상 배치하기</button>
+                </div>
+            </div>
+        </aside>
+    </div>
+
+    <!-- UI 토스트 메시지 -->
+    <div id="toast" class="toast"></div>
+
+    <script src="app.js"></script>
+</body>
+</html>

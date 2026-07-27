@@ -1,0 +1,274 @@
+from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import json
+import os
+import random
+from google import genai
+from google.genai import types
+
+# 기존 모델 모듈 임포트 (폴더 내 파일)
+from company_model import Corporate
+from developer_model import Developer
+
+app = FastAPI()
+
+# CORS 설정 (개발 및 테스트 원활화를 위해 설정)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Gemini API 클라이언트 초기화
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+client = genai.Client(api_key=GEMINI_API_KEY)
+
+# 인메모리 게임 글로벌 상태 관리자
+class GameState:
+    def __init__(self):
+        # 1. 플레이어의 스타트업 초기 생성 (직원 0명으로 초기화)
+        self.company = Corporate(0)
+        self.company.corporateName = "드림 스타트업"
+        self.company.staffNums = 0
+        self.company.staff_tags = []
+        self.company.reputation = 3000
+        self.company.funds = 150000  # USD 150,000 (시작 자금)
+        
+        # 2. 오피스 책상 레이아웃 (그리드 좌표)
+        self.desks = [
+            {"id": 1, "x": 1, "y": 1, "developer_tag": None},
+            {"id": 2, "x": 1, "y": 3, "developer_tag": None},
+            {"id": 3, "x": 3, "y": 1, "developer_tag": None},
+            {"id": 4, "x": 3, "y": 3, "developer_tag": None},
+        ]
+        
+        # 3. 지원자 풀 (Pool)
+        self.candidates = {}
+        self.conversation_histories = {}  # dev_tag -> 대화 요약
+        self.generate_new_candidates(3)
+        
+        # 4. 채용된 직원 객체 매핑 (tag -> Developer 인스턴스)
+        self.hired_employees = {}
+
+    def generate_new_candidates(self, count):
+        for _ in range(count):
+            dev = Developer(True, self.company.reputation)
+            # 스탯에 비례한 연봉 산출 (기본값)
+            dev.current_salary = int(dev.CA * 12 + 2500)
+            dev.disliked_people = []
+            
+            self.candidates[dev.tag] = dev
+            self.conversation_histories[dev.tag] = ""
+
+game_state = GameState()
+
+# REST API 엔드포인트 정의
+@app.get("/api/state")
+async def get_state():
+    """게임 상태 조회 (회사 정보, 책상 배치, 구직 지원자 리스트)"""
+    return {
+        "company": {
+            "name": game_state.company.corporateName,
+            "reputation": game_state.company.reputation,
+            "funds": game_state.company.funds,
+            "staff_count": game_state.company.staffNums
+        },
+        "desks": game_state.desks,
+        "candidates": [
+            {
+                "tag": dev.tag,
+                "name": f"{dev.first_name} {dev.last_name}",
+                "education": dev.education,
+                "main_field": dev.main_field,
+                "stats": dev.stats,
+                "CA": dev.CA,
+                "PA": dev.PA,
+                "current_salary": dev.current_salary,
+                "fatigue": dev.fatigue,
+                "morale": dev.morale
+            }
+            for dev in game_state.candidates.values()
+        ],
+        "hired_employees": {
+            tag: {
+                "tag": dev.tag,
+                "name": f"{dev.first_name} {dev.last_name}",
+                "education": dev.education,
+                "main_field": dev.main_field,
+                "stats": dev.stats,
+                "CA": dev.CA,
+                "fatigue": dev.fatigue,
+                "morale": dev.morale
+            }
+            for tag, dev in game_state.hired_employees.items()
+        }
+    }
+
+class ChatRequest(BaseModel):
+    developer_tag: str
+    message: str
+
+@app.post("/api/chat")
+async def chat_with_candidate(req: ChatRequest):
+    """구직 후보자와 LLM 면접 진행 API"""
+    dev_tag = req.developer_tag
+    if dev_tag not in game_state.candidates:
+        raise HTTPException(status_code=404, detail="지원자를 찾을 수 없습니다.")
+        
+    dev = game_state.candidates[dev_tag]
+    previous_conversation = game_state.conversation_histories[dev_tag]
+    
+    # Strict JSON 스키마를 통해 AI의 답변 형식을 보장합니다.
+    response_schema = {
+        "type": "OBJECT",
+        "properties": {
+            "dialogue": {"type": "STRING"},
+            "past_conversation_summary": {"type": "STRING"},
+            "hired": {"type": "BOOLEAN"},
+            "salary_demanded": {"type": "INTEGER"}
+        },
+        "required": ["dialogue", "past_conversation_summary", "hired", "salary_demanded"]
+    }
+    
+    system_instruction = """
+    You are an AI agent acting as a software developer in a startup management game.
+    Based on your current status and the user's recruitment proposal, decide whether to accept, negotiate, or reject.
+    Give out KOREAN dialogue. Use English only for the summary.
+
+    [TASK]
+    1. Respond in KOREAN (dialogue). Make it realistic, matching the stats.
+    2. Decide if you accept hiring (`hired` = true) or demand/negotiate salary (`hired` = false, but offer new `salary_demanded`).
+    3. If the user offers a salary equal to or higher than your current_salary, you are more likely to accept.
+    4. If the user treats you poorly or offers too low salary, reject or demand higher.
+    5. In the JSON output, `hired` should be `true` only if you and the user have agreed and you accept to join. If you are still negotiating or rejecting, `hired` is `false`.
+    6. Refuse immediately if the recruiter's reputation is too low for your class (e.g. PhD won't join low reputation).
+    7. NEVER mention exact numeric stats in the dialogue (e.g., Do NOT say "My morale is 25%"). Speak naturally.
+    """
+    
+    candidate_data = {
+        "name": f"{dev.first_name} {dev.last_name}",
+        "origin": dev.education,
+        "tech_stack": dev.stats,
+        "morale": dev.morale,
+        "fatigue": dev.fatigue,
+        "psychopath_score": dev.psychological_issue,
+        "current_salary": dev.current_salary,
+        "disliked_people": dev.disliked_people,
+        "favorite_field": dev.main_field
+    }
+    
+    player_company_info = {
+        "company_name": game_state.company.corporateName,
+        "reputation": game_state.company.reputation,
+        "members": [f"{h.first_name} {h.last_name}" for h in game_state.hired_employees.values()]
+    }
+    
+    prompt = f"""
+    You are an AI developer looking for a job. Decide if you want to join this recruiter's startup.
+
+    [YOUR CURRENT STATUS (Hidden Data)]
+    {json.dumps(candidate_data, indent=4, ensure_ascii=False)}
+
+    [RECRUITER'S COMPANY INFO]
+    {json.dumps(player_company_info, indent=4, ensure_ascii=False)}
+
+    [PREVIOUS CONVERSATION SUMMARY]
+    {previous_conversation}
+    
+    [USER'S MESSAGE]
+    "{req.message}"
+    
+    Respond accordingly and decide the values of `hired` and `salary_demanded`.
+    """
+    
+    try:
+        response = client.models.generate_content(
+            model='gemini-2.5-flash-lite',
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                response_mime_type="application/json",
+                response_schema=response_schema,
+                temperature=0.7
+            )
+        )
+        
+        if not response.text:
+            raise HTTPException(status_code=500, detail="Gemini 응답이 비어있습니다.")
+            
+        result = json.loads(response.text)
+        
+        # 대화 요약 업데이트
+        game_state.conversation_histories[dev_tag] = result["past_conversation_summary"]
+        
+        return {
+            "dialogue": result["dialogue"],
+            "hired": result["hired"],
+            "salary_demanded": result["salary_demanded"]
+        }
+        
+    except Exception as e:
+        print(f"Error calling LLM: {e}")
+        raise HTTPException(status_code=500, detail=f"LLM 처리 실패: {str(e)}")
+
+class HireRequest(BaseModel):
+    developer_tag: str
+    desk_id: int
+    salary: int
+
+@app.post("/api/hire")
+async def hire_developer(req: HireRequest):
+    """지정된 책상에 채용한 직원을 배치하는 API"""
+    if req.developer_tag not in game_state.candidates:
+        raise HTTPException(status_code=404, detail="해당 지원자가 풀에 존재하지 않습니다.")
+        
+    # 빈 책상 확인
+    target_desk = None
+    for d in game_state.desks:
+        if d["id"] == req.desk_id:
+            target_desk = d
+            break
+            
+    if not target_desk:
+        raise HTTPException(status_code=400, detail="유효하지 않은 책상 ID입니다.")
+    if target_desk["developer_tag"] is not None:
+        raise HTTPException(status_code=400, detail="해당 책상에는 이미 다른 직원이 배치되어 있습니다.")
+        
+    # 자금 부족 검증
+    if game_state.company.funds < req.salary:
+        raise HTTPException(status_code=400, detail="회사의 보유 자금이 부족하여 채용할 수 없습니다.")
+        
+    # 자금 차감
+    game_state.company.funds -= req.salary
+    
+    # 지원자 풀에서 제거하고 직원 풀에 등록
+    dev = game_state.candidates.pop(req.developer_tag)
+    game_state.conversation_histories.pop(req.developer_tag, None)
+    
+    target_desk["developer_tag"] = dev.tag
+    game_state.hired_employees[dev.tag] = dev
+    
+    # 회사 직원 수 업데이트
+    game_state.company.staff_tags.append(dev.tag)
+    game_state.company.staffNums += 1
+    
+    # 구직자 후보 자동 충전 (항상 3명 유지)
+    game_state.generate_new_candidates(1)
+    
+    return {
+        "status": "success",
+        "hired_developer": {
+            "tag": dev.tag,
+            "name": f"{dev.first_name} {dev.last_name}"
+        },
+        "desk_id": req.desk_id,
+        "remaining_funds": game_state.company.funds
+    }
+
+# 프론트엔드 정적 파일 서빙 등록
+# 백엔드가 실행될 작업 디렉토리 기준 상위/동일 레벨의 frontend 폴더를 연결합니다.
+app.mount("/", StaticFiles(directory="../frontend", html=True), name="frontend")
