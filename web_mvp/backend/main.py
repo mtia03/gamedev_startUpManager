@@ -32,6 +32,9 @@ app.add_middleware(
 
 # Gemini API 클라이언트 초기화
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+# 모델은 .env의 GEMINI_MODEL로 바꿀 수 있다.
+# gemini-2.5 계열은 신규 사용자에게 막혀 있어 새로 발급한 키로는 404가 난다.
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 # 키가 없어도 서버는 뜨게 한다. genai.Client()는 빈 키를 받으면 즉시 예외를 던지므로
 # 생성 자체를 건너뛰고, 면접 대화 API가 호출될 때만 막는다.
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
@@ -700,7 +703,7 @@ async def chat_with_candidate(req: ChatRequest):
     
     try:
         response = client.models.generate_content(
-            model='gemini-2.5-flash-lite',
+            model=GEMINI_MODEL,
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,

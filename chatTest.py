@@ -11,6 +11,7 @@ load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 if not GEMINI_API_KEY:
     raise SystemExit("GEMINI_API_KEY 환경 변수를 설정해주세요. (.env.example 참고)")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 def test_recruitment_processor(candidate_data, user_message, player_company_info, previous_message):
@@ -74,7 +75,7 @@ def test_recruitment_processor(candidate_data, user_message, player_company_info
 
     try:
         response = client.models.generate_content(
-            model='gemini-2.5-flash-lite',
+            model=GEMINI_MODEL,
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
