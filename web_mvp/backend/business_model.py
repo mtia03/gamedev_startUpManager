@@ -31,7 +31,9 @@ TIERS = {
 }
 
 # 등급이 올라갈수록 고위험 고수익. 보상 = 예상 인건비 × 배율
-REWARD_MULTIPLIER = {"T1": 1.2, "T2": 1.5, "T3": 1.8, "T4": 2.2, "T5": 3.0}
+# 실제 플레이에서는 목표 주차를 넘기기 쉽고 대기 인력 급여도 계속 나가므로,
+# 목표대로 끝냈을 때 확실히 남을 만큼 배율을 잡는다.
+REWARD_MULTIPLIER = {"T1": 2.2, "T2": 2.6, "T3": 3.0, "T4": 3.4, "T5": 4.0}
 REPUTATION_GAIN = {"T1": 150, "T2": 400, "T3": 900, "T4": 1800, "T5": 3500}
 
 # 보상 산정 기준: BD 개발자(CA 76)의 주급. main.py의 연봉 공식과 맞춘 값.
@@ -40,17 +42,44 @@ BASELINE_WEEKLY_SALARY = 1345
 # 처리량 파라미터 (project-scale-spec.md §2)
 # 부분야 계수는 등급이 낮을수록 관대하다. 가벼운 외주는 전공이 달라도 어느 정도
 # 해내지만, 대형 프로젝트는 전문가가 아니면 사실상 기여하지 못한다.
+# 초반 업무에서는 전공이 달라도 거의 제 몫을 한다. 초반에 딱 맞는 인력을 구하기
+# 어렵다는 점을 감안해 T1·T2는 패널티를 최소화했다.
 SUB_FIELD_COEF_BY_TIER = {
-    "T1": 0.60, "T2": 0.45, "T3": 0.35, "T4": 0.28, "T5": 0.25,
+    "T1": 0.90, "T2": 0.80, "T3": 0.55, "T4": 0.35, "T5": 0.25,
 }
 SUB_FIELD_COEF = 0.25   # 기본값 (문서 §2 기준, T5와 동일)
 COMM_FREE = 7
 COMM_PENALTY = 0.02
 COMM_FLOOR = 0.60
 
+# 전공과 다른 업무를 맡으면 사기가 깎인다. 이것도 낮은 등급일수록 약하다.
+MISMATCH_MORALE_DROP = {"T1": 0, "T2": 1, "T3": 2, "T4": 3, "T5": 4}
+
+# 쉬운 업무일수록 '주분야 실력'이 다른 분야로 전이된다.
+# 간단한 외주는 잘하는 개발자면 전공이 달라도 어느 정도 해내지만,
+# 대형 프로젝트는 그 분야 전문성이 없으면 실력이 전이되지 않는다.
+SKILL_TRANSFER_BY_TIER = {"T1": 0.65, "T2": 0.55, "T3": 0.25, "T4": 0.10, "T5": 0.0}
+
+
+def effective_stat(dev, field, tier):
+    """해당 업무에 실제로 기여하는 능력치."""
+    if dev.main_field == field:
+        return dev.stats[field]
+    gap = max(0, dev.stats[dev.main_field] - dev.stats[field])
+    transferred = dev.stats[field] + gap * SKILL_TRANSFER_BY_TIER.get(tier, 0.0)
+    return transferred * sub_field_coef(tier)
+
+# 전공이 일치하면 성공 확률에 보너스. 초반에는 있으나 마나지만
+# 등급이 오를수록 사실상 필수가 된다.
+MATCH_BONUS_BY_TIER = {"T1": 0.02, "T2": 0.05, "T3": 0.12, "T4": 0.18, "T5": 0.25}
+
 
 def sub_field_coef(tier):
     return SUB_FIELD_COEF_BY_TIER.get(tier, SUB_FIELD_COEF)
+
+
+def mismatch_morale_drop(tier):
+    return MISMATCH_MORALE_DROP.get(tier, 0)
 
 # 성공 확률 모델 (project-requirement-model.md §4)
 W_CREW, W_FLOOR, W_TOTAL = 0.25, 0.35, 0.40
@@ -60,9 +89,30 @@ PROB_CENTER = 0.80
 GATE_FAIL_PENALTY = 0.6   # 게이트 미충족 강행 시 확률 배율
 BASELINE_CA = 76          # BD 1명 기준 CA
 
-# 결과 등급별 보상 배율
-GRADE_REWARD = {"fail": 0.0, "good": 1.0, "great": 1.25}
-GRADE_LABEL = {"fail": "실패", "good": "양호", "great": "좋음"}
+# ── 업무 결과 4단계 ──────────────────────────────────────────
+# 실패는 업무가 사라지는 게 아니라 진행률이 되감기는 것이다. 다시 밀면 된다.
+#   critical : 진행률 0~5%로 초기화 (사실상 처음부터)
+#   fail     : 진행률 20~70%로 초기화 (능력치가 높을수록 70%에 가깝다)
+#   success  : 완료. 예측한 수준의 성과
+#   great    : 완료 + 사업 이익 가산 + 다음 업무 진행도 보너스
+GRADE_REWARD = {"success": 1.0, "great": 1.30}
+GRADE_LABEL = {
+    "critical": "완전 실패", "fail": "실패", "success": "성공", "great": "큰 성공",
+}
+
+# 실패가 얼마나 자주 일어나는가. 작은 사업에서는 거의 일어나지 않는다.
+# 실패 총량 = (1 - 성공확률) × FAIL_SCALE, 그중 CRIT_SHARE 만큼이 완전 실패.
+FAIL_SCALE_BY_TIER = {"T1": 0.12, "T2": 0.30, "T3": 0.60, "T4": 0.85, "T5": 1.00}
+CRIT_SHARE_BY_TIER = {"T1": 0.00, "T2": 0.04, "T3": 0.12, "T4": 0.22, "T5": 0.32}
+
+# 실패 시 남는 진행률 구간
+FAIL_KEEP_MIN, FAIL_KEEP_MAX = 0.20, 0.70
+CRIT_KEEP_MIN, CRIT_KEEP_MAX = 0.00, 0.05
+
+# 큰 성공: 성공분 중 이 비율이 큰 성공이 된다 (Score가 높을수록 커진다)
+GREAT_SHARE_MIN, GREAT_SHARE_MAX = 0.10, 0.55
+# 큰 성공 시 다음 업무가 미리 진행된 것으로 쳐주는 비율
+GREAT_NEXT_TASK_BONUS = 0.15
 
 # 사업 포기 위약금: 남은 보상의 일부를 물어내고 명성이 깎인다.
 ABANDON_PENALTY_RATE = 0.15
@@ -117,8 +167,10 @@ class Task:
         self.assigned = []              # 배치된 개발자 태그
         self.progress = 0.0
         self.status = "locked"          # locked / ready / active / done
-        self.grade = None               # fail / good / great
+        self.grade = None               # critical / fail / success / great
         self.weeks_worked = 0
+        self.attempts = 0               # 완료 판정을 몇 번 받았는가 (실패 포함)
+        self.last_setback = None        # 직전 실패 기록 (UI 표시용)
 
     @property
     def ratio(self):
@@ -132,6 +184,7 @@ class Task:
             "assigned": list(self.assigned), "status": self.status,
             "grade": self.grade, "grade_label": GRADE_LABEL.get(self.grade),
             "weeks_worked": self.weeks_worked,
+            "attempts": self.attempts, "last_setback": self.last_setback,
         }
 
 
@@ -214,12 +267,26 @@ class Business:
                 t.status = "ready"
 
     def settle(self):
-        """완료된 사업의 보상을 업무별 요구 공수 비중 × 등급 배율로 정산한다."""
+        """완료된 사업의 보상을 업무별 요구 공수 비중 × 결과 배율로 정산한다.
+
+        모든 업무는 결국 성공으로 끝난다(실패는 진행률 되감기일 뿐). 큰 성공이
+        섞여 있으면 그만큼 사업 전체 이익이 올라간다.
+        """
         total = sum(t.required for t in self.tasks) or 1
-        ratio = sum((t.required / total) * GRADE_REWARD.get(t.grade, 0.0)
+        ratio = sum((t.required / total) * GRADE_REWARD.get(t.grade, 1.0)
                     for t in self.tasks)
         self.payout = int(self.reward * ratio)
         return self.payout
+
+    def apply_great_bonus(self, finished_task):
+        """큰 성공 시 바로 다음에 열리는 업무에 진행도를 미리 얹어준다."""
+        boosted = []
+        for t in self.tasks:
+            if t.status == "done" or finished_task.tag not in t.requires:
+                continue
+            t.progress = min(t.required, t.progress + t.required * GREAT_NEXT_TASK_BONUS)
+            boosted.append(t.name)
+        return boosted
 
     def to_dict(self):
         return {
@@ -252,9 +319,7 @@ def throughput(devs, field, tier=None):
     """
     if not devs:
         return 0.0
-    coef = sub_field_coef(tier) if tier else SUB_FIELD_COEF
-    raw = sum(d.stats[field] * (1.0 if d.main_field == field else coef)
-              for d in devs)
+    raw = sum(effective_stat(d, field, tier) for d in devs)
     condition = sum(condition_factor(d) for d in devs) / len(devs)
     return raw * comm_efficiency(len(devs)) * condition
 
@@ -275,8 +340,19 @@ def check_gate(devs, task, gate):
     return not reasons, reasons
 
 
+def match_ratio(devs, field):
+    """배치된 인원 중 주분야가 업무와 일치하는 비율."""
+    if not devs:
+        return 0.0
+    return sum(1 for d in devs if d.main_field == field) / len(devs)
+
+
 def success_score(devs, task, business):
-    """3축(인원/하한/능력합) 충족도를 가중 합산한 Score."""
+    """3축(인원/하한/능력합) 충족도를 가중 합산한 Score.
+
+    여기에 주분야 일치 보너스를 얹는다. 낮은 등급에서는 미미하고
+    높은 등급에서는 이게 없으면 확률이 크게 떨어진다.
+    """
     if not devs:
         return 0.0
     # 업무 1개에 권장되는 인원 = 사업 권장 인원 / 업무 수
@@ -290,9 +366,12 @@ def success_score(devs, task, business):
            if floor else 1.0)
     r_t = sum(d.CA for d in devs) / rec_total_ca if rec_total_ca else 1.0
 
-    return (W_CREW * min(r_n, 1.20)
+    base = (W_CREW * min(r_n, 1.20)
             + W_FLOOR * min(r_f, 1.00)
             + W_TOTAL * min(r_t, 1.20))
+
+    bonus = MATCH_BONUS_BY_TIER.get(business.tier, 0.0) * match_ratio(devs, task.field)
+    return base + bonus
 
 
 def success_probability(devs, task, business):
@@ -306,9 +385,48 @@ def success_probability(devs, task, business):
     return max(0.02, min(PROB_CAP, p))
 
 
-def roll_grade(p):
-    """완료 판정. 실패 = 1-p, 나머지를 좋음/양호로 반씩 가른다."""
+def outcome_odds(p, score, tier):
+    """4단계 결과의 확률 분포를 계산한다.
+
+    작은 사업일수록 실패 자체가 드물게 일어나고, 규모가 클수록 실패 비중이 커진다.
+    Score가 높으면 성공분 안에서 큰 성공 비율이 올라간다.
+    """
+    fail_total = (1 - p) * FAIL_SCALE_BY_TIER.get(tier, 1.0)
+    crit = fail_total * CRIT_SHARE_BY_TIER.get(tier, 0.0)
+    fail = fail_total - crit
+
+    ok_total = 1.0 - fail_total
+    # Score 0.7 → 최소, 1.2 이상 → 최대
+    t = max(0.0, min(1.0, (score - 0.70) / 0.50))
+    great_share = GREAT_SHARE_MIN + (GREAT_SHARE_MAX - GREAT_SHARE_MIN) * t
+    great = ok_total * great_share
+    success = ok_total - great
+
+    return {"critical": crit, "fail": fail, "success": success, "great": great}
+
+
+def roll_outcome(p, score, tier):
+    """완료 시점 판정. (등급, 남길 진행률 비율)을 돌려준다.
+
+    성공/큰 성공이면 비율은 None (업무 완료).
+    실패면 진행률이 그 비율로 되감긴다 — 능력치가 좋을수록 많이 남는다.
+    """
+    odds = outcome_odds(p, score, tier)
     r = random.random()
-    if r >= p:
-        return "fail"
-    return "great" if r < p / 2 else "good"
+
+    acc = odds["critical"]
+    if r < acc:
+        keep = CRIT_KEEP_MIN + (CRIT_KEEP_MAX - CRIT_KEEP_MIN) * min(1.0, score / 1.2)
+        return "critical", keep
+
+    acc += odds["fail"]
+    if r < acc:
+        t = max(0.0, min(1.0, (score - 0.50) / 0.70))
+        keep = FAIL_KEEP_MIN + (FAIL_KEEP_MAX - FAIL_KEEP_MIN) * t
+        return "fail", keep
+
+    acc += odds["success"]
+    if r < acc:
+        return "success", None
+
+    return "great", None

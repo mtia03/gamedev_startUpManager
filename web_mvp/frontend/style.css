@@ -85,7 +85,10 @@ body {
     font-weight: 800;
     background: linear-gradient(135deg, #60a5fa, #a78bfa);
     -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    /* -webkit-text-fill-color 대신 표준 color를 쓴다.
+       background-clip:text 과 함께라면 같은 그라데이션 글자 효과가 난다. */
+    color: transparent;
 }
 
 /* 카드 및 섹션 스타일 */
@@ -591,6 +594,7 @@ textarea:focus {
     padding: 32px;
     background: rgba(0, 0, 0, 0.6);
     backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
 }
 
 .biz-panel {
@@ -794,6 +798,7 @@ textarea:focus {
     font-size: 11px;
     cursor: pointer;
     user-select: none;
+    -webkit-user-select: none;
 }
 
 .assign-chip.on {
@@ -868,7 +873,313 @@ textarea:focus {
     z-index: 155;
     background: rgba(0, 0, 0, 0.55);
     backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
 }
+
+/* 대화로 알아내는 정보 (사정 / 원하는 것) */
+.discovery {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 10px;
+}
+
+.disc {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 600;
+}
+
+.disc .t { color: var(--text-secondary); font-weight: 400; }
+
+/* 아직 모르는 것 — 물어볼 게 있다는 신호만 준다 */
+.disc.unknown {
+    border: 1px dashed rgba(255, 255, 255, 0.2);
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: help;
+}
+
+.disc.circumstance { background: rgba(245, 158, 11, 0.2); color: var(--neon-orange); }
+.disc.need { background: rgba(59, 130, 246, 0.2); color: #93c5fd; }
+.disc.need.met { background: rgba(16, 185, 129, 0.22); color: #6ee7b7; }
+
+/* 어필 결과 피드백 */
+.appeal-note {
+    margin: 6px 0;
+    padding: 7px 11px;
+    border-radius: var(--border-radius-md);
+    font-size: 11px;
+    line-height: 1.5;
+}
+
+.appeal-note.hit {
+    background: rgba(16, 185, 129, 0.12);
+    border-left: 3px solid var(--neon-green);
+    color: #6ee7b7;
+}
+
+.appeal-note.miss {
+    background: rgba(239, 68, 68, 0.12);
+    border-left: 3px solid var(--neon-red);
+    color: #fca5a5;
+}
+
+/* 면접 창 내 파악도 / 필드별 추정 구간 */
+.reveal-tag {
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: rgba(59, 130, 246, 0.2);
+    color: #93c5fd;
+    font-size: 9px;
+    font-weight: 700;
+}
+
+.reveal-tag.done { background: rgba(16, 185, 129, 0.2); color: #6ee7b7; }
+
+.mini-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 4px;
+    margin-top: 8px;
+}
+
+.mini-stat {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 4px;
+    padding: 3px 6px;
+    border-radius: 5px;
+    background: rgba(0, 0, 0, 0.25);
+    font-size: 10px;
+}
+
+.mini-stat.main { background: rgba(139, 92, 246, 0.2); }
+.mini-stat .f { color: var(--text-secondary); }
+.mini-stat .r { font-weight: 700; font-variant-numeric: tabular-nums; }
+.mini-stat .r.exact { color: var(--neon-green); }
+
+/* 지원자 이탈 안내 */
+.left-notice {
+    padding: 12px 14px;
+    margin-top: 10px;
+    border-radius: var(--border-radius-md);
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    background: rgba(239, 68, 68, 0.12);
+    color: #fca5a5;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+/* 스탯 추정 구간 표시 */
+.stat-cell .v.est {
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+
+.ace-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: rgba(245, 158, 11, 0.22);
+    color: var(--neon-orange);
+    font-size: 10px;
+    font-weight: 700;
+}
+
+.reveal-hint { color: var(--accent-blue) !important; }
+
+/* ── 회사 현황 카드 (압축 레이아웃) ────────────────────────── */
+.co-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    padding-bottom: 12px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid var(--panel-border);
+}
+
+.co-name {
+    font-family: var(--font-title);
+    font-size: 16px;
+    font-weight: 700;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.co-week {
+    flex-shrink: 0;
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+/* 핵심 지표 2×2 */
+.kpi-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+
+.kpi {
+    padding: 9px 10px;
+    border-radius: var(--border-radius-md);
+    background: rgba(0, 0, 0, 0.22);
+}
+
+.kpi .k {
+    display: block;
+    font-size: 10px;
+    color: var(--text-secondary);
+    margin-bottom: 3px;
+}
+
+.kpi .v {
+    display: block;
+    font-size: 15px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+
+/* 사무실 한 줄 */
+.office-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 12px;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.link-btn {
+    flex-shrink: 0;
+    padding: 3px 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(245, 158, 11, 0.4);
+    background: transparent;
+    color: var(--neon-orange);
+    font-family: var(--font-sans);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.link-btn:hover:not(:disabled) { background: rgba(245, 158, 11, 0.15); }
+.link-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* 턴 진행 — 주 액션 하나만 크게 */
+.turn-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 14px;
+}
+
+.btn-turn {
+    flex: 1;
+    padding: 11px;
+    border: none;
+    border-radius: var(--border-radius-md);
+    background: var(--accent-purple);
+    color: #fff;
+    font-family: var(--font-sans);
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
+    transition: all var(--transition-speed) ease;
+}
+
+.btn-turn:hover:not(:disabled) { background: #7c3aed; transform: translateY(-1px); }
+
+.btn-turn:disabled {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-secondary);
+    box-shadow: none;
+    cursor: not-allowed;
+}
+
+.btn-turn-sub {
+    flex-shrink: 0;
+    padding: 11px 16px;
+    border-radius: var(--border-radius-md);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.btn-turn-sub:hover:not(:disabled) { background: rgba(255, 255, 255, 0.12); }
+.btn-turn-sub:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── 패널 이동 (채용 / 사업 / 팀) ──────────────────────────── */
+.panel-nav {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+}
+
+.panel-nav button {
+    position: relative;
+    padding: 12px 4px;
+    border-radius: var(--border-radius-md);
+    border: 1px solid var(--panel-border);
+    background: var(--panel-bg);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    cursor: pointer;
+    transition: all var(--transition-speed) ease;
+}
+
+.panel-nav button:hover {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: var(--accent-blue);
+}
+
+.panel-nav .ic { display: block; font-size: 18px; line-height: 1; }
+.panel-nav .lbl { display: block; margin-top: 5px; font-size: 11px; font-weight: 600; }
+
+.panel-nav .cnt {
+    display: block;
+    margin-top: 2px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
+.panel-nav .dot {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--neon-green);
+    animation: live-pulse 1.6s ease-in-out infinite;
+}
+
+/* 업무 실패 되감기 표시 */
+.setback {
+    display: block;
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--neon-red);
+}
+
+.task-status.retry { background: rgba(239, 68, 68, 0.2); color: #fca5a5; }
 
 /* 면접 진행 중 표시 — 그 주에 확정하지 않으면 지원자가 떠난다 */
 .live-badge {
@@ -1183,6 +1494,7 @@ textarea:focus {
     background: var(--panel-bg);
     border: 1px solid var(--panel-border);
     backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
     text-align: center;
 }

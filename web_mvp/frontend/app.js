@@ -2,7 +2,12 @@
 let gameState = {
     company: null,
     time: null,
+    office: null,
     selectedDifficulty: 'normal',
+    seenCandidates: new Set(),
+    // 지원자별 대화 기록과 협상 상태. 창을 닫았다 열어도 유지된다.
+    chatLogs: {},
+    negotiation: {},
     desks: [],
     candidates: [],
     hiredEmployees: {},
@@ -78,7 +83,27 @@ function resizeCanvas() {
 async function openPoolModal() {
     document.getElementById('pool-modal').classList.remove('d-none');
     await fetchGameState();
+    // 목록을 열어봤으면 '새 지원자' 배지를 내린다
+    (gameState.candidates || []).forEach(c => gameState.seenCandidates.add(c.tag));
+    renderPoolSummary();
     renderPool();
+}
+
+// 사무실 확장
+async function upgradeOffice() {
+    const o = gameState.office;
+    if (!o || !o.next) return;
+    const msg = `${o.next.label}로 확장할까요?\n\n`
+        + `책상 ${o.desks} → ${o.next.desks}개\n`
+        + `비용 $${o.next.cost.toLocaleString()}\n\n`
+        + '확장 직후 몇 주간 지원자가 몰립니다.';
+    if (!confirm(msg)) return;
+
+    const r = await postJson('/api/office/upgrade', {});
+    if (r) {
+        showToast(`🏢 ${r.label}로 확장했습니다. (책상 ${r.desks}개)`);
+        await fetchGameState();
+    }
 }
 
 function closePoolModal() {
@@ -102,14 +127,35 @@ function renderPool() {
     wirePool();
 }
 
+// 대기 줄 카드용 축약 칩. 면접으로 알아낸 것만 뜬다.
+function poolDiscoveryChips(c) {
+    const chips = [];
+    chips.push(c.circumstance
+        ? `<span class="disc circumstance"><span class="t">사정</span>${c.circumstance.label}</span>`
+        : `<span class="disc unknown"><span class="t">사정</span>?</span>`);
+
+    if (!c.needs_known) {
+        chips.push(`<span class="disc unknown"><span class="t">원하는 것</span>?</span>`);
+    } else if (!c.needs || !c.needs.length) {
+        chips.push(`<span class="disc need"><span class="t">원하는 것</span>연봉만 본다</span>`);
+    } else {
+        c.needs.forEach(n =>
+            chips.push(`<span class="disc need"><span class="t">원함</span>${n.label}</span>`));
+    }
+    return chips.join('');
+}
+
 function renderPoolCard(c) {
     const traits = (c.traits || []).map(t =>
         `<span class="trait ${t.tone}" title="${t.desc}">${t.label}</span>`).join('');
 
-    const stats = Object.entries(c.stats).map(([f, v]) => `
+    // 지원자 스탯은 추정 구간으로만 보인다. 면접을 통해 좁혀진다.
+    const stats = Object.entries(c.stat_ranges || {}).map(([f, r]) => `
         <div class="stat-cell ${f === c.main_field ? 'main' : ''}">
             <span class="k">${FIELD_LABEL[f]}</span>
-            <span class="v">${v}</span>
+            <span class="v ${r.exact ? '' : 'est'}">
+                ${r.exact ? r.low : `${r.low}~${r.high}`}
+            </span>
         </div>`).join('');
 
     const dropped = c.initial_demand && c.current_salary < c.initial_demand
@@ -122,7 +168,16 @@ function renderPoolCard(c) {
                     <div class="pool-name">${c.name}
                         <span class="biz-tier">${c.education}</span>
                     </div>
-                    <div class="biz-sub">${FIELD_LABEL[c.main_field]} 전문 · CA ${c.CA}</div>
+                    <div class="biz-sub">
+                        ${FIELD_LABEL[c.main_field]} 전문 · ${c.class_hint}
+                        ${c.is_ace ? '<span class="ace-badge">에이스</span>' : ''}
+                    </div>
+                    <div class="biz-sub reveal-hint">
+                        파악도 ${c.reveal_level}/${c.max_reveal_level}
+                        ${c.reveal_level >= c.max_reveal_level
+                            ? '· 정확히 파악함'
+                            : '· 실력을 물어보면 더 좁혀집니다'}
+                    </div>
                     <div class="biz-sub">
                         ${c.negotiation_turns ? `협상 ${c.negotiation_turns}회 진행` : '아직 접촉 전'}
                     </div>
@@ -137,6 +192,7 @@ function renderPoolCard(c) {
             </div>
 
             <div class="trait-row">${traits}</div>
+            <div class="discovery">${poolDiscoveryChips(c)}</div>
             ${c.urgency ? `<span class="urgency ${c.urgency.level}">"${c.urgency.hint}"</span>` : ''}
             <div class="stat-row">${stats}</div>
 
@@ -358,6 +414,7 @@ async function refreshBusinesses() {
         const response = await fetch('/api/businesses');
         if (!response.ok) throw new Error('사업 목록을 불러올 수 없습니다.');
         bizData = await response.json();
+        renderPoolSummary();
         renderBusinesses();
     } catch (error) {
         document.getElementById('biz-body').innerHTML =
@@ -424,7 +481,8 @@ function renderBizCard(b) {
 
 function renderTask(b, t) {
     const pct = Math.round(t.ratio * 100);
-    const gradeText = t.grade
+    // 완료된 업무만 결과를 확정 표시한다 (실패는 되감기라 아직 진행 중)
+    const gradeText = t.status === 'done' && t.grade
         ? ` · 결과 <strong>${t.grade_label}</strong>`
         : '';
     const reqNames = t.requires.length
@@ -436,13 +494,25 @@ function renderTask(b, t) {
         panel = renderAssignBox(b, t);
     }
 
+    // 실패로 되감긴 이력
+    const setback = t.last_setback
+        ? `<span class="setback">⚠ ${t.last_setback.grade === 'critical' ? '완전 실패' : '실패'}로
+             진행률이 ${t.last_setback.kept}%로 되감겼습니다. 다시 밀어붙이면 됩니다.
+             ${t.attempts > 1 ? `(시도 ${t.attempts}회)` : ''}</span>`
+        : '';
+
+    const statusCls = t.last_setback && t.status !== 'done' ? 'retry' : t.status;
+    const statusTxt = t.last_setback && t.status !== 'done'
+        ? '재도전 중' : STATUS_LABEL[t.status];
+
     return `
         <div class="task-row">
             <div class="task-head">
                 <span class="task-field">${FIELD_LABEL[t.field]}</span>
                 <span class="task-name">${t.name}</span>
-                <span class="task-status ${t.status}">${STATUS_LABEL[t.status]}</span>
+                <span class="task-status ${statusCls}">${statusTxt}</span>
             </div>
+            ${setback}
             <div class="task-bar"><div class="task-bar-fill" style="width:${pct}%"></div></div>
             <div class="task-meta">
                 <span>${Math.round(t.progress)} / ${t.required} 공수 (${pct}%)</span>
@@ -723,6 +793,7 @@ async function fetchGameState() {
 
         gameState.company = data.company;
         gameState.time = data.time;
+        gameState.office = data.office;
         gameState.desks = data.desks;
         gameState.candidates = data.candidates;
         gameState.hiredEmployees = data.hired_employees;
@@ -755,35 +826,35 @@ function updateUI() {
         document.getElementById('rest-week-btn').disabled = gameState.time.is_bankrupt;
     }
 
-    // 지원자 리스트 렌더링
-    const listEl = document.getElementById('candidate-list');
-    listEl.innerHTML = '';
-    
-    gameState.candidates.forEach(cand => {
-        const item = document.createElement('div');
-        item.className = `candidate-item ${gameState.selectedCandidateTag === cand.tag ? 'active' : ''}`;
-        item.onclick = () => selectCandidate(cand.tag);
-        
-        item.innerHTML = `
-            <div class="candidate-item-header">
-                <span class="candidate-name">${cand.name}</span>
-                <span class="badge ${cand.education === 'PhD' || cand.education === 'MD' ? 'purple' : ''}">${cand.education}</span>
-            </div>
-            <div class="candidate-meta">
-                <span>${cand.main_field} 전문</span>
-                <span>희망연봉: $${cand.current_salary.toLocaleString()}</span>
-            </div>
-            <div class="candidate-meta">
-                <span>${cand.negotiation_turns ? `협상 ${cand.negotiation_turns}회` : '미접촉'}</span>
-                ${cand.interview_open
-                    ? '<span class="live-badge">면접 중 · 이번 주 마감</span>' : ''}
-            </div>
-            ${cand.urgency
-                ? `<span class="urgency ${cand.urgency.level}">"${cand.urgency.hint}"</span>`
-                : ''}
-        `;
-        listEl.appendChild(item);
-    });
+    // 사무실 현황
+    if (gameState.office) {
+        const o = gameState.office;
+        document.getElementById('company-office').textContent =
+            `${o.label} · 책상 ${o.desks}`;
+        const upBtn = document.getElementById('upgrade-office-btn');
+        if (o.next) {
+            upBtn.classList.remove('d-none');
+            upBtn.disabled = gameState.company.funds < o.next.cost;
+            upBtn.title = `책상 ${o.desks} → ${o.next.desks}개 · $${o.next.cost.toLocaleString()}`;
+        } else {
+            upBtn.classList.add('d-none');
+        }
+    }
+
+    // 지원자 요약 (자세한 내용은 팝업)
+    renderPoolSummary();
+}
+
+// 패널 이동 버튼의 숫자와 알림 점을 갱신한다
+function renderPoolSummary() {
+    const list = gameState.candidates || [];
+    document.getElementById('pool-count').textContent = `${list.length}명`;
+
+    const fresh = list.some(c => !gameState.seenCandidates.has(c.tag));
+    document.getElementById('pool-new').classList.toggle('d-none', !fresh);
+
+    const active = (bizData.active || []).length;
+    document.getElementById('biz-count').textContent = `${active}건`;
 }
 
 // 지원자 선택 시 우측 사이드바 로드
@@ -809,27 +880,128 @@ function selectCandidate(tag) {
     document.getElementById('interview-dev-field').textContent = cand.main_field;
     document.getElementById('interview-dev-salary').textContent = `$${cand.current_salary.toLocaleString()}`;
     
-    // CA 능력치 게이지
-    const maxCA = 300;
-    const percent = Math.min((cand.CA / maxCA) * 100, 100);
-    document.getElementById('stat-ca-val').textContent = cand.CA;
-    document.getElementById('stat-ca-bar').style.width = `${percent}%`;
+    renderInsight(cand);
     
-    // 채팅 내용 초기화 및 첫 프롬프트 생성
+    // 이 지원자와의 대화가 처음이면 인사말을 만들어 기록에 넣는다
+    if (!gameState.chatLogs[tag]) {
+        gameState.chatLogs[tag] = [{
+            sender: 'candidate',
+            html: `안녕하세요! ${gameState.company.name} 면접에 참여하게 된 개발자 ${cand.name}입니다.
+                   저는 주로 <strong class="text-warning">${cand.main_field}</strong> 파트를 담당하고 있습니다.
+                   스타트업에 입사하기 전, 연봉 협상과 근무 조건 조율을 정중히 요청드립니다.`
+        }];
+    }
+    // 다른 지원자를 떠나보낸 뒤 잠겼을 수 있는 입력창을 되살린다
+    document.getElementById('chat-input').disabled = false;
+    document.getElementById('chat-send-btn').disabled = false;
+
+    renderChatLog(tag);
+    restoreNegotiationState(tag, cand);
+    scrollToBottom();
+}
+
+// 면접 창의 파악도 · 체급 · 필드별 추정 구간을 그린다.
+// insight는 /api/state의 지원자 항목이나 /api/chat 응답 둘 다 같은 모양이다.
+function renderInsight(info) {
+    if (!info || !info.stat_ranges) return;
+
+    const pct = info.max_reveal_level
+        ? (info.reveal_level / info.max_reveal_level) * 100 : 0;
+    const done = info.reveal_level >= info.max_reveal_level;
+
+    document.getElementById('stat-ca-val').textContent =
+        `${info.class_hint}${info.is_ace ? ' · 에이스' : ''}`;
+    document.getElementById('stat-ca-bar').style.width = `${pct}%`;
+
+    const tag = document.getElementById('stat-reveal');
+    tag.textContent = done
+        ? '파악 완료'
+        : `파악 ${info.reveal_level}/${info.max_reveal_level}`;
+    tag.classList.toggle('done', done);
+
+    const mainField = gameState.candidates.find(c => c.tag === gameState.selectedCandidateTag)?.main_field;
+    document.getElementById('stat-ranges').innerHTML =
+        Object.entries(info.stat_ranges).map(([f, r]) => `
+            <div class="mini-stat ${f === mainField ? 'main' : ''}">
+                <span class="f">${FIELD_LABEL[f]}</span>
+                <span class="r ${r.exact ? 'exact' : ''}">
+                    ${r.exact ? r.low : `${r.low}~${r.high}`}
+                </span>
+            </div>`).join('');
+
+    renderDiscovery(info);
+}
+
+// 사정 / 원하는 것 — 대화로 알아낸 것만 보여준다.
+// 모르는 항목은 물음표로 남겨서 "물어보면 알 수 있다"는 것만 알린다.
+function renderDiscovery(info) {
+    const row = document.getElementById('discovery-row');
+    if (!row) return;
+
+    const chips = [];
+
+    if (info.circumstance) {
+        chips.push(`<span class="disc circumstance">
+            <span class="t">사정</span>${info.circumstance.label}</span>`);
+    } else {
+        chips.push(`<span class="disc unknown" title="왜 이직하려는지, 지금 어떤 상황인지 물어보세요">
+            <span class="t">사정</span>?</span>`);
+    }
+
+    if (info.needs_known) {
+        if (!info.needs || !info.needs.length) {
+            chips.push(`<span class="disc need">
+                <span class="t">원하는 것</span>연봉만 본다</span>`);
+        } else {
+            info.needs.forEach(n => {
+                const met = (gameState.provenNeeds || []).includes(n.label);
+                chips.push(`<span class="disc need ${met ? 'met' : ''}"
+                    title="${met ? '이미 어필에 성공했습니다' : '우리 회사가 갖췄다면 어필해보세요'}">
+                    <span class="t">원함</span>${n.label}${met ? ' ✓' : ''}</span>`);
+            });
+        }
+    } else {
+        chips.push(`<span class="disc unknown" title="회사를 고를 때 무엇을 중요하게 보는지 물어보세요">
+            <span class="t">원하는 것</span>?</span>`);
+    }
+
+    row.innerHTML = chips.join('');
+}
+
+// 보관해둔 대화 기록을 화면에 다시 그린다
+function renderChatLog(tag) {
     const messagesEl = document.getElementById('chat-messages');
-    messagesEl.innerHTML = `
-        <div class="msg candidate">
-            안녕하세요! ${gameState.company.name} 면접에 참여하게 된 개발자 ${cand.name}입니다. 
-            저는 주로 <strong class="text-warning">${cand.main_field}</strong> 파트를 담당하고 있습니다. 
-            스타트업에 입사하기 전, 연봉 협상과 근무 조건 조율을 정중히 요청드립니다.
-        </div>
-    `;
-    
-    // 채용 버튼 감추기
-    document.getElementById('hire-confirm-btn').classList.add('d-none');
+    messagesEl.innerHTML = (gameState.chatLogs[tag] || []).map(m =>
+        // 어필 결과 안내는 말풍선이 아니라 별도 스타일로 그린다
+        m.sender.startsWith('appeal-note')
+            ? `<div class="${m.sender}">${m.html}</div>`
+            : `<div class="msg ${m.sender}">${m.html}</div>`
+    ).join('');
+}
+
+// 협상 진행 상황(채용 버튼 / 상태 문구)도 같이 복원한다
+function restoreNegotiationState(tag, cand) {
+    const state = gameState.negotiation[tag];
     const statusBox = document.getElementById('decision-status-box');
-    statusBox.className = 'decision-status';
-    document.getElementById('decision-status-text').textContent = '대화 진행 중...';
+    const hireBtn = document.getElementById('hire-confirm-btn');
+    const statusText = document.getElementById('decision-status-text');
+
+    if (state && state.hired) {
+        statusBox.className = 'decision-status accepted';
+        statusText.textContent = `협상 완료 (제안 연봉: $${state.demand.toLocaleString()})`;
+        hireBtn.classList.remove('d-none');
+        gameState.placementCandidateTag = tag;
+        gameState.placementSalary = state.demand;
+    } else if (state) {
+        statusBox.className = 'decision-status';
+        const offered = state.offered ? ` / 내 제안 $${state.offered.toLocaleString()}` : '';
+        statusText.textContent = `협상 진행 중 (요구 $${state.demand.toLocaleString()}${offered})`;
+        hireBtn.classList.add('d-none');
+    } else {
+        statusBox.className = 'decision-status';
+        statusText.textContent = `대화 진행 중... (희망 연봉 $${cand.current_salary.toLocaleString()})`;
+        hireBtn.classList.add('d-none');
+    }
 }
 
 // 실시간 채팅 전송
@@ -869,16 +1041,42 @@ async function sendChatMessage() {
         const hireBtn = document.getElementById('hire-confirm-btn');
 
         // 지원자가 스스로 떠난 경우 (아주 드물게 발생)
+        // 패널을 바로 지우면 왜 사라졌는지 알 수 없으므로 안내를 남긴다.
         if (data.walked_away) {
             statusBox.className = 'decision-status';
-            document.getElementById('decision-status-text').textContent =
-                '지원자가 협상을 중단하고 떠났습니다.';
+            document.getElementById('decision-status-text').textContent = '협상 결렬';
             hireBtn.classList.add('d-none');
+
+            const notice = document.createElement('div');
+            notice.className = 'left-notice';
+            notice.textContent =
+                `이 지원자는 떠났습니다. ${data.walk_reason || ''} 지원 목록에서도 사라집니다.`;
+            document.getElementById('chat-messages').appendChild(notice);
+            document.getElementById('chat-input').disabled = true;
+            document.getElementById('chat-send-btn').disabled = true;
+
             showToast('🚪 지원자가 떠났습니다.');
             await fetchGameState();
-            clearInterviewPanel();
+            scrollToBottom();
             return;
         }
+
+        // 어필이 통했는지 / 허풍이 들통났는지 알려준다
+        if (data.appeal) {
+            gameState.provenNeeds = (gameState.provenNeeds || [])
+                .concat(data.appeal.hits.filter(h => !(gameState.provenNeeds || []).includes(h)));
+            appendAppealNote(data.appeal);
+        }
+
+        // 이번 대화로 파악도가 올라갔을 수 있으니 갱신
+        renderInsight(data.insight);
+
+        // 협상 상태를 보관해두면 창을 닫았다 열어도 복원된다
+        gameState.negotiation[tag] = {
+            hired: data.hired,
+            demand: data.salary_demanded,
+            offered: data.offered_salary,
+        };
 
         if (data.hired) {
             statusBox.className = 'decision-status accepted';
@@ -908,12 +1106,44 @@ async function sendChatMessage() {
     scrollToBottom();
 }
 
+// 어필 결과를 대화 흐름 안에 남긴다 (대화 기록에도 저장돼 다시 열어도 보인다)
+function appendAppealNote(appeal) {
+    const parts = [];
+    if (appeal.hits.length) {
+        parts.push({ cls: 'hit',
+            text: `✓ ${appeal.hits.join(', ')} 어필이 통했습니다. 연봉을 더 깎을 여지가 생겼습니다.` });
+    }
+    if (appeal.misses.length) {
+        parts.push({ cls: 'miss',
+            text: `✗ ${appeal.misses.join(', ')}은(는) 사실과 달랐습니다. 신뢰를 잃었습니다.` });
+    }
+    const tag = gameState.selectedCandidateTag;
+    parts.forEach(p => {
+        const el = document.createElement('div');
+        el.className = `appeal-note ${p.cls}`;
+        el.textContent = p.text;
+        document.getElementById('chat-messages').appendChild(el);
+        if (tag) {
+            if (!gameState.chatLogs[tag]) gameState.chatLogs[tag] = [];
+            gameState.chatLogs[tag].push({ sender: `appeal-note ${p.cls}`, html: p.text });
+        }
+    });
+}
+
 function appendMessage(sender, text) {
+    const html = text.replace(/\n/g, '<br>');
     const container = document.getElementById('chat-messages');
     const msg = document.createElement('div');
     msg.className = `msg ${sender}`;
-    msg.innerHTML = text.replace(/\n/g, '<br>');
+    msg.innerHTML = html;
     container.appendChild(msg);
+
+    // 창을 닫았다 열어도 남아 있도록 기록에 보관
+    const tag = gameState.selectedCandidateTag;
+    if (tag) {
+        if (!gameState.chatLogs[tag]) gameState.chatLogs[tag] = [];
+        gameState.chatLogs[tag].push({ sender, html });
+    }
 }
 
 function scrollToBottom() {
@@ -979,8 +1209,16 @@ async function advanceWeek(rest = false) {
     }
 }
 
+// 풀에서 사라진 지원자의 대화 기록을 버린다
+function forgetCandidate(tag) {
+    if (!tag) return;
+    delete gameState.chatLogs[tag];
+    delete gameState.negotiation[tag];
+}
+
 // 면접 패널을 빈 상태로 되돌린다 (탈락 / 이탈 / 채용 후)
 function clearInterviewPanel() {
+    forgetCandidate(gameState.selectedCandidateTag);
     gameState.selectedCandidateTag = null;
     gameState.placementCandidateTag = null;
     document.getElementById('interview-active-panel').classList.add('d-none');
@@ -1062,6 +1300,9 @@ function setupEventListeners() {
         });
     });
 
+    // 사무실 확장
+    document.getElementById('upgrade-office-btn').addEventListener('click', upgradeOffice);
+
     // 면접 대기 줄 모달
     document.getElementById('open-pool-btn').addEventListener('click', openPoolModal);
     document.getElementById('pool-close-btn').addEventListener('click', closePoolModal);
@@ -1092,6 +1333,13 @@ function setupEventListeners() {
 
     // 최종 채용 및 배치 모드 진입
     document.getElementById('hire-confirm-btn').addEventListener('click', () => {
+        // 확대된 면접 창과 팝업이 캔버스를 덮고 있으면 책상을 클릭할 수 없다.
+        // 배치 모드로 들어가기 전에 메인 화면을 되돌려준다.
+        closePoolModal();
+        if (document.getElementById('right-sidebar').classList.contains('expanded')) {
+            toggleInterviewExpand();
+        }
+
         gameState.isPlacementMode = true;
         document.getElementById('placement-overlay').classList.add('active');
         showToast('🎯 오피스 맵에서 빈 책상을 선택해 직원을 배치하세요.');
@@ -1153,7 +1401,10 @@ async function handleCanvasClick(e) {
             }
             
             showToast('🎉 새로운 팀원이 채용되었습니다! 책상 배치가 완료되었습니다.');
-            
+
+            // 채용이 끝났으면 대화 기록은 더 필요 없다
+            forgetCandidate(gameState.placementCandidateTag);
+
             // 상태 해제
             gameState.isPlacementMode = false;
             document.getElementById('placement-overlay').classList.remove('active');

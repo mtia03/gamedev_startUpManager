@@ -40,49 +40,62 @@
                 <h1>Dream Startup</h1>
             </div>
 
-            <!-- 회사 현황 카드 -->
+            <!-- 회사 현황 -->
             <div class="card company-status">
-                <h3>회사 현황</h3>
-                <div class="status-item">
-                    <span class="label">회사명</span>
-                    <span class="value" id="company-name">로딩 중...</span>
+                <div class="co-header">
+                    <span class="co-name" id="company-name">로딩 중...</span>
+                    <span class="co-week" id="company-week">1주차</span>
                 </div>
-                <div class="status-item">
-                    <span class="label">보유 자금</span>
-                    <span class="value text-success" id="company-funds">$0</span>
+
+                <div class="kpi-grid">
+                    <div class="kpi">
+                        <span class="k">보유 자금</span>
+                        <span class="v text-success" id="company-funds">$0</span>
+                    </div>
+                    <div class="kpi">
+                        <span class="k">주당 급여</span>
+                        <span class="v text-danger" id="company-payroll">$0</span>
+                    </div>
+                    <div class="kpi">
+                        <span class="k">평판</span>
+                        <span class="v text-warning" id="company-reputation">0</span>
+                    </div>
+                    <div class="kpi">
+                        <span class="k">팀원</span>
+                        <span class="v" id="company-staff">0명</span>
+                    </div>
                 </div>
-                <div class="status-item">
-                    <span class="label">회사 평판</span>
-                    <span class="value text-warning" id="company-reputation">0</span>
+
+                <div class="office-row">
+                    <span id="company-office">원룸 사무실 · 책상 4</span>
+                    <button class="link-btn d-none" id="upgrade-office-btn">확장</button>
                 </div>
-                <div class="status-item">
-                    <span class="label">현재 팀원</span>
-                    <span class="value" id="company-staff">0 명</span>
+
+                <div class="turn-row">
+                    <button class="btn-turn" id="advance-week-btn">다음 주로 &rarr;</button>
+                    <button class="btn-turn-sub" id="rest-week-btn"
+                            title="피로를 회복합니다. 그 주에는 업무가 진행되지 않습니다.">휴식</button>
                 </div>
-                <div class="status-item">
-                    <span class="label">경과 주차</span>
-                    <span class="value" id="company-week">1 주차</span>
-                </div>
-                <div class="status-item">
-                    <span class="label">주당 급여</span>
-                    <span class="value text-danger" id="company-payroll">$0</span>
-                </div>
-                <button class="btn-advance" id="advance-week-btn">다음 주로 &rarr;</button>
-                <button class="btn-advance btn-rest" id="rest-week-btn">휴식 주간 (피로 회복)</button>
-                <button class="btn-advance btn-biz" id="open-biz-btn">📋 사업 관리</button>
-                <button class="btn-advance btn-team" id="open-team-btn">👥 팀 &amp; 기록</button>
             </div>
 
-            <!-- 구직 지원자 목록 -->
-            <div class="candidate-section">
-                <h3>
-                    인재 채용 풀 (LLM 면접 대기)
-                    <button class="section-expand" id="open-pool-btn" title="지원자 전체 보기">⤢</button>
-                </h3>
-                <div class="candidate-list" id="candidate-list">
-                    <!-- JS로 채워짐 -->
-                </div>
-            </div>
+            <!-- 패널 이동 -->
+            <nav class="panel-nav">
+                <button id="open-pool-btn">
+                    <span class="ic">🧑‍💻</span>
+                    <span class="lbl">채용</span>
+                    <span class="cnt" id="pool-count">0</span>
+                    <span class="dot d-none" id="pool-new"></span>
+                </button>
+                <button id="open-biz-btn">
+                    <span class="ic">📋</span>
+                    <span class="lbl">사업</span>
+                    <span class="cnt" id="biz-count">0</span>
+                </button>
+                <button id="open-team-btn">
+                    <span class="ic">👥</span>
+                    <span class="lbl">팀·기록</span>
+                </button>
+            </nav>
         </aside>
 
         <!-- 2. 중앙 영역: 쿼터뷰 게임 화면 -->
@@ -134,17 +147,22 @@
                             <span class="value" id="interview-dev-salary">$5,000</span>
                         </div>
                     </div>
+
+                    <!-- 대화로 알아내는 정보. 알아내기 전에는 물음표로만 보인다 -->
+                    <div class="discovery" id="discovery-row"></div>
                     
                     <!-- 능력치 게이지 -->
                     <div class="stats-bars">
                         <div class="stat-bar-item">
                             <div class="stat-label">
-                                <span>종합 능력치 (CA)</span>
+                                <span>종합 능력치 <small class="reveal-tag" id="stat-reveal">파악 0/4</small></span>
                                 <span id="stat-ca-val">0</span>
                             </div>
                             <div class="bar-bg">
                                 <div class="bar-fill ca-fill" style="width: 0%" id="stat-ca-bar"></div>
                             </div>
+                            <!-- 필드별 추정 구간 (면접이 진행될수록 좁아진다) -->
+                            <div class="mini-stats" id="stat-ranges"></div>
                         </div>
                     </div>
                 </div>
