@@ -19,6 +19,8 @@ from company_model import Corporate
 from developer_model import Developer
 import business_model as biz
 import verbalizer as vb
+import equipment as eq
+import ledger as lg
 
 app = FastAPI()
 
@@ -323,7 +325,14 @@ class GameState:
         self.week = 1
         self.is_bankrupt = False
 
-        # 6. 이벤트 로그 (최근 것이 앞)
+        # 6. 설비 (유형자산). 구매분은 감가상각되고 리스분은 매주 비용이다.
+        self.equipment = []
+
+        # 6-b. 회계 원장. 시작 자금이 곧 자본금이다.
+        #      company.funds는 원장의 현금을 그대로 비추는 값으로 유지한다.
+        self.ledger = lg.Ledger(preset["funds"])
+
+        # 7. 이벤트 로그 (최근 것이 앞)
         self.event_log = []
 
         # 7. 사업 (수주 대기 목록 / 진행 중)
@@ -361,10 +370,18 @@ class GameState:
             return None, "이미 최고 레벨입니다."
         nxt = self.office_level + 1
         cost = OFFICE_LEVELS[nxt]["upgrade_cost"]
-        if self.company.funds < cost:
+        if self.ledger.cash < cost:
             return None, f"확장 비용 ${cost:,}를 감당할 자금이 부족합니다."
 
-        self.company.funds -= cost
+        # 사무실도 유형자산이다. 집기 단위로 계상해 감가상각한다.
+        self.ledger.buy_asset(cost)
+        unit = eq.Unit(eq.SERVER_KEY, "own")
+        unit.key = eq.OFFICE_KEY
+        unit.cost = cost
+        unit.life = eq.OFFICE_LIFE
+        unit.book = float(cost)
+        self.equipment.append(unit)
+        self.sync_funds()
         self.office_level = nxt
         self.rebuild_desks()
         self.expansion_buzz = EXPANSION_BUZZ_WEEKS
@@ -372,6 +389,59 @@ class GameState:
             f"사무실을 {OFFICE_LEVELS[nxt]['label']}(책상 {OFFICE_LEVELS[nxt]['desks']}개)로 "
             f"확장했습니다. 비용 ${cost:,}", "business")
         return nxt, None
+
+    # ── 회계 ────────────────────────────────────────────────
+    def sync_funds(self):
+        """company.funds는 원장 현금의 사본이다. 원장을 건드린 뒤 호출한다."""
+        self.company.funds = int(self.ledger.cash)
+
+    def equipment_book(self):
+        return sum(u.book for u in self.equipment)
+
+    # ── 설비 ────────────────────────────────────────────────
+    def field_load(self, field):
+        """지금 동시에 진행 중인 해당 필드 업무 수."""
+        return sum(1 for b in self.active_businesses for t in b.tasks
+                   if t.field == field and t.status == "active")
+
+    def business_load(self):
+        """진행 중인 사업 건수 (개발 서버 수요)."""
+        return len(self.active_businesses)
+
+    def equipment_penalty(self, field, tier):
+        """이 업무가 받는 설비 부족 페널티 (분야 설비 + 공통 서버)."""
+        return (eq.shortage_penalty(self.equipment, field, self.field_load(field), tier)
+                + eq.shortage_penalty(self.equipment, eq.SERVER_KEY,
+                                      self.business_load(), tier))
+
+    def equipment_overview(self):
+        """설비 현황 — 보유 / 필요 / 부족을 한 번에 본다."""
+        rows = []
+        for key in list(eq.EQUIPMENT) + [eq.SERVER_KEY]:
+            load = (self.business_load() if key == eq.SERVER_KEY
+                    else self.field_load(key))
+            units = [u for u in self.equipment if u.key == key]
+            spec = eq.spec_of(key)
+            rows.append({
+                "key": key,
+                "label": spec["label"],
+                "cost": spec["cost"],
+                "lease_weekly": eq.lease_fee(key),
+                "penalty": spec["penalty"],
+                "load": load,
+                "required": eq.required_units(load),
+                "have": eq.capacity(units, key),
+                "owned": sum(1 for u in units if u.mode == "own"),
+                "leased": sum(1 for u in units if u.mode == "lease"),
+                "aged": sum(1 for u in units if u.aged),
+                "book_value": int(sum(u.book for u in units)),
+                "units": [u.to_dict() for u in units],
+            })
+        return rows
+
+    def weekly_equipment_cost(self):
+        """주당 리스료 합계."""
+        return sum(eq.lease_fee(u.key) for u in self.equipment if u.mode == "lease")
 
     # ── 이벤트 로그 ──────────────────────────────────────────
     def log(self, text, kind="info"):
@@ -384,7 +454,8 @@ class GameState:
         """명성과 감당 가능한 인원에 맞춰 수주 대기 목록을 채운다."""
         while len(self.offered_businesses) < count:
             tier = biz.pick_tier(self.company.reputation, len(self.desks))
-            self.offered_businesses.append(biz.Business(tier))
+            genre = biz.pick_genre(self.company.reputation)
+            self.offered_businesses.append(biz.Business(tier, genre))
 
     def find_business(self, tag):
         for b in self.offered_businesses + self.active_businesses:
@@ -442,7 +513,9 @@ class GameState:
                     events.append(f"[{b.name}] {t.name}: 배치 인원이 없어 진행이 멈췄습니다.")
                     continue
 
-                t.progress += biz.throughput(devs, t.field, b.tier)
+                # 설비가 모자라면 처리량이 깎인다
+                gear = 1.0 - self.equipment_penalty(t.field, b.tier)
+                t.progress += biz.throughput(devs, t.field, b.tier) * max(0.2, gear)
                 t.weeks_worked += 1
 
                 # 전공과 다른 업무를 맡으면 사기가 깎인다 (낮은 등급일수록 약함)
@@ -493,11 +566,35 @@ class GameState:
                         events.append(msg)
                         self.log(msg, "danger")
 
+            # 진행기준 수익 인식 — 일한 만큼 매주 수익으로 잡는다.
+            # 대금은 나중에 들어오므로 "손익은 흑자인데 현금이 없는" 상황이 생긴다.
+            ratio = b.overall_ratio()
+            target = b.reward * ratio
+            delta = target - b.recognized
+            if abs(delta) >= 1:
+                b.recognized = target
+                if delta > 0:
+                    self.ledger.recognize(delta)
+                else:
+                    # 실패로 진행률이 되감기면 인식했던 수익도 되돌린다
+                    self.ledger.reverse_revenue(-delta)
+
             if b.is_complete():
                 payout = b.settle()
                 b.status = "completed"
                 b.completed_week = self.week
-                self.company.funds += payout
+                # 확정 보상과 그동안 인식한 금액의 차이를 조정한다
+                adjust = payout - b.recognized
+                if abs(adjust) >= 1:
+                    if adjust > 0:
+                        self.ledger.recognize(adjust)
+                    else:
+                        self.ledger.reverse_revenue(-adjust)
+                    b.recognized = payout
+                # 잔금 수령 (착수금으로 받은 몫을 뺀 나머지)
+                remainder = max(0, payout - b.advance_received)
+                self.ledger.collect(remainder)
+                self.sync_funds()
                 gained = int(b.reputation_gain * (payout / b.reward)) if b.reward else 0
                 self.company.reputation += gained
                 self.active_businesses.remove(b)
@@ -538,18 +635,43 @@ class GameState:
         if rest:
             events.append("이번 주는 휴식 주간입니다. 팀이 재충전합니다.")
 
+        self.ledger.week_net = 0.0
+
         # 1. 급여 지급 (자금이 모자라면 미지급 처리)
-        paid = payroll <= self.company.funds
+        paid = payroll <= self.ledger.cash
         if paid:
-            self.company.funds -= payroll
             if payroll:
+                self.ledger.pay("노무비", payroll)
                 msg = f"급여 ${payroll:,} 지급 (재직자 {len(self.hired_employees)}명)"
                 events.append(msg)
                 self.log(msg, "salary")
         else:
+            self.ledger.accrue_wages(payroll)
             msg = f"자금 부족으로 급여 ${payroll:,}를 지급하지 못했습니다. 팀의 사기가 급락합니다."
             events.append(msg)
             self.log(msg, "danger")
+
+        # 1-b. 설비 유지 — 리스료 지출과 감가상각
+        lease_cost = self.weekly_equipment_cost()
+        if lease_cost:
+            self.ledger.pay("설비 리스료", lease_cost)
+            events.append(f"설비 리스료 ${lease_cost:,} 지출")
+        depreciation = sum(u.depreciate() for u in self.equipment)
+        self.ledger.depreciate(depreciation)
+
+        # 1-c. 대출 이자와 만기 상환
+        loan_events, unpaid_loan = self.ledger.tick_loans()
+        events += loan_events
+        for e in loan_events:
+            self.log(e, "danger" if "없습니다" in e else "salary")
+        self.sync_funds()
+        newly_aged = [u for u in self.equipment if u.aged and not getattr(u, "_aged_logged", False)]
+        for u in newly_aged:
+            u._aged_logged = True
+            msg = f"{eq.spec_of(u.key)['label']}이(가) 노후화되었습니다. 교체가 필요합니다."
+            events.append(msg)
+            self.log(msg, "danger")
+        self.last_depreciation = int(depreciation)
 
         # 2. 팀 내 유해 인원 수 (자기 자신은 제외하고 계산한다)
         toxic_tags = {tag for tag, dev in self.hired_employees.items()
@@ -615,15 +737,30 @@ class GameState:
                 if self.hired_employees:
                     self.team_morale(MORALE_COWORKER_LEFT)
 
-        # 6. 파산 판정
-        if not paid:
+        # 6. 파산 판정 — 급여 미지급 또는 대출 만기 미상환
+        if not paid or unpaid_loan:
             self.is_bankrupt = True
-            msg = "회사가 급여를 감당하지 못하는 상태입니다. (파산)"
+            msg = ("회사가 급여를 감당하지 못하는 상태입니다. (파산)" if not paid
+                   else f"만기 대출 ${unpaid_loan:,}를 상환하지 못했습니다. (파산)")
             events.append(msg)
             self.log(msg, "danger")
 
         self.week += 1
-        return {"payroll": payroll, "paid": paid, "events": events}
+        self.sync_funds()
+
+        # 7. 결산 — 8주마다 손익을 확정하고 대차대조표를 남긴다
+        settlement = None
+        if self.week - self.ledger.last_settled_week >= lg.SETTLEMENT_WEEKS:
+            settlement = self.ledger.settle(self.week, self.equipment_book())
+            msg = (f"{self.week}주차 결산 — 수익 ${settlement['revenue']:,} / "
+                   f"비용 ${settlement['expense']:,} / "
+                   f"순이익 ${settlement['net']:,}")
+            events.append(msg)
+            self.log(msg, "reward" if settlement["net"] >= 0 else "danger")
+
+        return {"payroll": payroll, "paid": paid, "events": events,
+                "week_net": int(self.ledger.week_net),
+                "settlement": settlement}
 
     def candidate_capacity(self):
         """대기 가능한 지원자 수. 사무실이 커지면 지원자도 더 몰린다."""
@@ -1189,8 +1326,18 @@ async def accept_business(req: AcceptRequest):
             game_state.offered_businesses.remove(b)
             game_state.active_businesses.append(b)
             game_state.refresh_offers()
-            game_state.log(f"사업 '{b.name}' [{b.tier}] 수주 — 보상 ${b.reward:,}", "business")
-            return {"status": "success", "business": b.to_dict()}
+
+            # 착수금 수령 — 현금이 들어오지만 아직 일을 안 했으므로 선수금(부채)이다
+            advance = int(b.reward * lg.ADVANCE_RATE)
+            b.advance_received = advance
+            game_state.ledger.receive_advance(advance)
+            game_state.sync_funds()
+
+            game_state.log(
+                f"사업 '{b.name}' [{b.tier}] 수주 — 계약 ${b.reward:,}, "
+                f"착수금 ${advance:,} 수령", "business")
+            return {"status": "success", "business": b.to_dict(),
+                    "advance": advance}
     raise HTTPException(status_code=404, detail="수주 가능한 사업이 아닙니다.")
 
 @app.post("/api/businesses/assign")
@@ -1280,7 +1427,12 @@ async def abandon_business(req: AcceptRequest):
 
     penalty = int(b.reward * biz.ABANDON_PENALTY_RATE)
     rep_loss = int(b.reputation_gain * biz.ABANDON_REPUTATION_RATE)
-    game_state.company.funds -= penalty
+    game_state.ledger.pay("위약금", penalty)
+    # 인식했던 수익을 되돌리고, 아직 일하지 않은 몫의 착수금은 반환한다
+    game_state.ledger.reverse_revenue(b.recognized)
+    game_state.ledger.refund_advance(b.advance_received)
+    b.recognized = 0.0
+    game_state.sync_funds()
     game_state.company.reputation = max(0, game_state.company.reputation - rep_loss)
 
     for t in b.tasks:
@@ -1300,6 +1452,139 @@ async def abandon_business(req: AcceptRequest):
         "reputation_loss": rep_loss,
         "funds": game_state.company.funds,
         "reputation": game_state.company.reputation,
+    }
+
+class BorrowRequest(BaseModel):
+    product: str          # short / long
+    amount: int
+
+class RepayRequest(BaseModel):
+    loan_id: str
+
+@app.get("/api/finance")
+async def get_finance():
+    """재무 현황 — 대차대조표, 이번 분기 손익, 대출, 결산 이력"""
+    require_started()
+    return game_state.ledger.to_dict(game_state.equipment_book(), game_state.week)
+
+@app.post("/api/finance/borrow")
+async def borrow(req: BorrowRequest):
+    """대출을 실행한다. 한도는 자산총계의 50%에서 기존 차입금을 뺀 값이다."""
+    require_started()
+    if req.product not in lg.LOAN_PRODUCTS:
+        raise HTTPException(status_code=400, detail="존재하지 않는 대출 상품입니다.")
+    amount = int(req.amount)
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="대출 금액을 입력해주세요.")
+
+    limit = game_state.ledger.loan_limit(game_state.equipment_book())
+    if amount > limit:
+        raise HTTPException(
+            status_code=400, detail=f"대출 한도 ${limit:,}를 초과했습니다.")
+
+    loan = game_state.ledger.borrow(req.product, amount,
+                                    game_state.company.reputation)
+    game_state.sync_funds()
+    game_state.log(
+        f"{loan.label} ${amount:,} 대출 실행 (주당 이자 ${int(amount * loan.rate):,}, "
+        f"{loan.weeks_left}주 만기)", "business")
+    return {"status": "success", "loan": loan.to_dict(),
+            "funds": game_state.company.funds}
+
+@app.post("/api/finance/repay")
+async def repay(req: RepayRequest):
+    """대출을 조기 상환한다."""
+    require_started()
+    loan = next((l for l in game_state.ledger.loans if l.id == req.loan_id), None)
+    if not loan:
+        raise HTTPException(status_code=404, detail="해당 대출이 없습니다.")
+    if game_state.ledger.cash < loan.principal:
+        raise HTTPException(
+            status_code=400, detail=f"상환액 ${loan.principal:,}를 감당할 자금이 부족합니다.")
+
+    game_state.ledger.cash -= loan.principal
+    game_state.ledger.loans.remove(loan)
+    game_state.sync_funds()
+    game_state.log(f"{loan.label} ${loan.principal:,} 조기 상환", "business")
+    return {"status": "success", "funds": game_state.company.funds}
+
+class EquipRequest(BaseModel):
+    key: str
+    mode: str = "own"        # own(구매) / lease(리스)
+    count: int = 1
+
+class DisposeRequest(BaseModel):
+    unit_id: str
+
+@app.get("/api/equipment")
+async def list_equipment():
+    """설비 현황 — 보유 / 필요 / 부족과 구매·리스 조건"""
+    require_started()
+    return {
+        "items": game_state.equipment_overview(),
+        "weekly_lease": game_state.weekly_equipment_cost(),
+        "book_value": int(sum(u.book for u in game_state.equipment)),
+        "capacity_per_unit": eq.CAPACITY_PER_UNIT,
+    }
+
+@app.post("/api/equipment/acquire")
+async def acquire_equipment(req: EquipRequest):
+    """설비를 구매하거나 리스한다."""
+    require_started()
+    if req.key != eq.SERVER_KEY and req.key not in eq.EQUIPMENT:
+        raise HTTPException(status_code=404, detail="존재하지 않는 설비입니다.")
+    if req.mode not in ("own", "lease"):
+        raise HTTPException(status_code=400, detail="구매 또는 리스만 가능합니다.")
+    count = max(1, min(int(req.count), 5))
+
+    spec = eq.spec_of(req.key)
+    if req.mode == "own":
+        total = spec["cost"] * count
+        if game_state.ledger.cash < total:
+            raise HTTPException(
+                status_code=400, detail=f"구매 비용 ${total:,}를 감당할 자금이 부족합니다.")
+        game_state.ledger.buy_asset(total)
+        game_state.sync_funds()
+    else:
+        total = 0   # 리스는 선지출이 없고 매주 리스료만 나간다
+
+    for _ in range(count):
+        game_state.equipment.append(eq.Unit(req.key, req.mode))
+
+    verb = "구매" if req.mode == "own" else "리스 계약"
+    game_state.log(
+        f"{spec['label']} {count}대 {verb}"
+        + (f" (${total:,})" if total else
+           f" (주당 ${eq.lease_fee(req.key) * count:,})"), "business")
+    return {
+        "status": "success",
+        "spent": total,
+        "funds": game_state.company.funds,
+        "items": game_state.equipment_overview(),
+    }
+
+@app.post("/api/equipment/dispose")
+async def dispose_equipment(req: DisposeRequest):
+    """구매 설비는 되팔고(장부가의 60%), 리스는 해지한다."""
+    require_started()
+    unit = next((u for u in game_state.equipment if u.id == req.unit_id), None)
+    if not unit:
+        raise HTTPException(status_code=404, detail="보유하지 않은 설비입니다.")
+
+    refund = int(unit.book * eq.RESALE_RATE) if unit.mode == "own" else 0
+    if unit.mode == "own":
+        game_state.ledger.sell_asset(unit.book, refund)
+    game_state.equipment.remove(unit)
+    game_state.sync_funds()
+    label = eq.spec_of(unit.key)["label"]
+    game_state.log(
+        f"{label} " + (f"매각 (${refund:,} 회수)" if unit.mode == "own" else "리스 해지"),
+        "business")
+    return {
+        "status": "success",
+        "refund": refund,
+        "funds": game_state.company.funds,
+        "items": game_state.equipment_overview(),
     }
 
 @app.post("/api/office/upgrade")
@@ -1342,7 +1627,8 @@ async def fire_developer(req: FireRequest):
             if req.developer_tag in t.assigned:
                 t.assigned.remove(req.developer_tag)
 
-    game_state.company.funds -= severance
+    game_state.ledger.pay("퇴직금", severance)
+    game_state.sync_funds()
     game_state.resign_employee(req.developer_tag)
     game_state.log(
         f"{dev.first_name} {dev.last_name} 님을 해고했습니다. (퇴직금 ${severance:,})", "resign")
@@ -1376,6 +1662,8 @@ async def advance_week(req: AdvanceRequest = AdvanceRequest()):
         "funds": game_state.company.funds,
         "is_bankrupt": game_state.is_bankrupt,
         "events": result["events"],
+        "week_net": result.get("week_net", 0),
+        "settlement": result.get("settlement"),
         "employees": [
             {
                 "tag": dev.tag,

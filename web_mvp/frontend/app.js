@@ -245,6 +245,8 @@ const LOG_KINDS = [
 let teamTab = 'staff';
 let logKind = '';
 let logRows = [];
+let financeData = null;
+let equipData = null;
 
 async function openTeamModal() {
     document.getElementById('team-modal').classList.remove('d-none');
@@ -266,6 +268,18 @@ async function refreshTeam() {
             logRows = [];
         }
     }
+    if (teamTab === 'finance') {
+        try {
+            const r = await fetch('/api/finance');
+            financeData = r.ok ? await r.json() : null;
+        } catch (e) { financeData = null; }
+    }
+    if (teamTab === 'equipment') {
+        try {
+            const r = await fetch('/api/equipment');
+            equipData = r.ok ? await r.json() : null;
+        } catch (e) { equipData = null; }
+    }
     renderTeam();
 }
 
@@ -274,8 +288,156 @@ function renderTeam() {
         el.classList.toggle('active', el.dataset.tab === teamTab);
     });
     const body = document.getElementById('team-body');
-    body.innerHTML = teamTab === 'staff' ? renderStaffList() : renderLogList();
+    body.innerHTML = {
+        staff: renderStaffList,
+        equipment: renderEquipment,
+        finance: renderFinance,
+        log: renderLogList,
+    }[teamTab]();
     wireTeamPanel();
+}
+
+// ── 설비 ────────────────────────────────────────────────
+function renderEquipment() {
+    if (!equipData) return '<p class="biz-empty">설비 정보를 불러오지 못했습니다.</p>';
+
+    const rows = equipData.items.map(it => {
+        const short = it.have < it.required;
+        const status = it.load === 0
+            ? '<span class="eq-idle">지금 필요 없음</span>'
+            : short
+                ? `<span class="eq-short">부족 — 필요 ${it.required}대 / 보유 ${it.have}대</span>`
+                : `<span class="eq-ok">충족 — ${it.have}대</span>`;
+
+        const units = it.units.map(u => `
+            <div class="eq-unit ${u.aged ? 'aged' : ''}">
+                <span>${u.mode === 'own' ? '구매' : '리스'}
+                    ${u.aged ? '· 노후' : `· 장부가 $${u.book.toLocaleString()}`}</span>
+                <button class="btn btn-secondary btn-sm" data-dispose="${u.id}">
+                    ${u.mode === 'own' ? '매각' : '해지'}
+                </button>
+            </div>`).join('');
+
+        return `
+            <div class="eq-card ${short ? 'warn' : ''}">
+                <div class="eq-top">
+                    <div>
+                        <div class="eq-name">${it.label}</div>
+                        <div class="biz-sub">
+                            미보유 시 처리량 −${Math.round(it.penalty * 100)}% ·
+                            동시 ${equipData.capacity_per_unit}건당 1대
+                        </div>
+                        <div class="biz-sub">${status}</div>
+                    </div>
+                    <div class="eq-price">
+                        $${it.cost.toLocaleString()}
+                        <small>리스 주 $${it.lease_weekly.toLocaleString()}</small>
+                    </div>
+                </div>
+                <div class="eq-actions">
+                    <button class="btn btn-primary btn-sm"
+                            data-buy="${it.key}" data-mode="own">구매</button>
+                    <button class="btn btn-secondary btn-sm"
+                            data-buy="${it.key}" data-mode="lease">리스</button>
+                </div>
+                ${units ? `<div class="eq-units">${units}</div>` : ''}
+            </div>`;
+    }).join('');
+
+    return `
+        <p class="biz-sub" style="margin-bottom:14px;">
+            설비 장부가 $${equipData.book_value.toLocaleString()} ·
+            주당 리스료 $${equipData.weekly_lease.toLocaleString()}
+        </p>
+        ${rows}`;
+}
+
+// ── 재무 ────────────────────────────────────────────────
+function renderFinance() {
+    if (!financeData) return '<p class="biz-empty">재무 정보를 불러오지 못했습니다.</p>';
+
+    const f = financeData;
+    const b = f.balance;
+    const p = f.period;
+
+    const line = (label, value, cls = '') =>
+        `<div class="fin-line ${cls}">
+            <span>${label}</span><span>$${value.toLocaleString()}</span>
+        </div>`;
+
+    const section = (title, obj) => `
+        <div class="fin-section">
+            <h4>${title}</h4>
+            ${Object.entries(obj).filter(([k]) => k !== '합계')
+                .map(([k, v]) => line(k, v)).join('')}
+            ${line('합계', obj['합계'], 'total')}
+        </div>`;
+
+    const breakdown = Object.entries(p.breakdown || {})
+        .map(([k, v]) => line(k, v)).join('') || '<p class="biz-sub">아직 없음</p>';
+
+    const loans = f.loans.length ? f.loans.map(l => `
+        <div class="fin-loan">
+            <div>
+                <strong>${l.label}</strong> $${l.principal.toLocaleString()}
+                <div class="biz-sub">주 이자 $${l.weekly_interest.toLocaleString()}
+                    (${l.rate}%) · 만기 ${l.weeks_left}주</div>
+            </div>
+            <button class="btn btn-secondary btn-sm" data-repay="${l.id}">조기 상환</button>
+        </div>`).join('') : '<p class="biz-sub">차입금 없음</p>';
+
+    const history = f.history.length ? f.history.map(h => `
+        <div class="fin-hist ${h.net >= 0 ? 'plus' : 'minus'}">
+            <span>${h.week}주차</span>
+            <span>수익 $${h.revenue.toLocaleString()}</span>
+            <span>비용 $${h.expense.toLocaleString()}</span>
+            <span class="net">${h.net >= 0 ? '+' : ''}$${h.net.toLocaleString()}</span>
+        </div>`).join('') : '<p class="biz-sub">아직 결산 이력이 없습니다.</p>';
+
+    const warn = Math.abs(f.imbalance) >= 1
+        ? `<p class="appeal-note miss">⚠ 대차 불일치 ${f.imbalance} — 버그입니다.</p>` : '';
+
+    return `
+        ${warn}
+        <div class="fin-summary">
+            <div><span class="k">이번 주 손익</span>
+                <span class="v ${f.week_net >= 0 ? 'text-success' : 'text-danger'}">
+                    ${f.week_net >= 0 ? '+' : ''}$${f.week_net.toLocaleString()}</span></div>
+            <div><span class="k">이번 분기 순이익</span>
+                <span class="v ${p.net >= 0 ? 'text-success' : 'text-danger'}">
+                    ${p.net >= 0 ? '+' : ''}$${p.net.toLocaleString()}</span></div>
+            <div><span class="k">다음 결산</span>
+                <span class="v">${p.weeks_to_settle}주 후</span></div>
+        </div>
+
+        <div class="fin-grid">
+            <div>
+                <h3 class="fin-title">대차대조표</h3>
+                ${section('자산', b.assets)}
+                ${section('부채', b.liabilities)}
+                ${section('자본', b.equity)}
+            </div>
+            <div>
+                <h3 class="fin-title">손익계산서 · 이번 분기</h3>
+                <div class="fin-section">${breakdown}</div>
+
+                <h3 class="fin-title">차입금</h3>
+                <div class="fin-section">
+                    <p class="biz-sub">대출 한도 $${f.loan_limit.toLocaleString()}
+                        · 주 이자 합계 $${f.weekly_interest.toLocaleString()}</p>
+                    ${loans}
+                    <div class="fin-borrow">
+                        <input type="number" id="loan-amount" class="setup-input"
+                               placeholder="대출 금액" style="margin:0;">
+                        <button class="btn btn-primary btn-sm" data-borrow="short">단기</button>
+                        <button class="btn btn-secondary btn-sm" data-borrow="long">장기</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <h3 class="fin-title">결산 이력</h3>
+        <div class="fin-section">${history}</div>`;
 }
 
 function renderStaffList() {
@@ -382,6 +544,67 @@ function wireTeamPanel() {
             }
         };
     });
+
+    // 설비 구매 / 리스
+    document.querySelectorAll('[data-buy]').forEach(el => {
+        el.onclick = async () => {
+            const mode = el.dataset.mode;
+            const item = equipData.items.find(i => i.key === el.dataset.buy);
+            const msg = mode === 'own'
+                ? `${item.label}을(를) $${item.cost.toLocaleString()}에 구매할까요?`
+                : `${item.label}을(를) 리스할까요?\n주당 $${item.lease_weekly.toLocaleString()} · 총액은 구매가의 1.4배입니다.`;
+            if (!confirm(msg)) return;
+            const r = await postJson('/api/equipment/acquire',
+                { key: el.dataset.buy, mode, count: 1 });
+            if (r) {
+                showToast(mode === 'own'
+                    ? `🏭 ${item.label} 구매 ($${r.spent.toLocaleString()})`
+                    : `📄 ${item.label} 리스 계약`);
+                await refreshTeam();
+            }
+        };
+    });
+
+    // 설비 매각 / 리스 해지
+    document.querySelectorAll('[data-dispose]').forEach(el => {
+        el.onclick = async () => {
+            if (!confirm('처분할까요? 구매 설비는 장부가의 60%만 회수됩니다.')) return;
+            const r = await postJson('/api/equipment/dispose', { unit_id: el.dataset.dispose });
+            if (r) {
+                showToast(r.refund ? `설비 매각 ($${r.refund.toLocaleString()} 회수)` : '리스 해지');
+                await refreshTeam();
+            }
+        };
+    });
+
+    // 대출 실행
+    document.querySelectorAll('[data-borrow]').forEach(el => {
+        el.onclick = async () => {
+            const amount = parseInt(document.getElementById('loan-amount').value, 10);
+            if (!amount || amount <= 0) {
+                showToast('⚠️ 대출 금액을 입력하세요.');
+                return;
+            }
+            const r = await postJson('/api/finance/borrow',
+                { product: el.dataset.borrow, amount });
+            if (r) {
+                showToast(`💰 ${r.loan.label} $${r.loan.principal.toLocaleString()} 대출 실행`);
+                await refreshTeam();
+            }
+        };
+    });
+
+    // 조기 상환
+    document.querySelectorAll('[data-repay]').forEach(el => {
+        el.onclick = async () => {
+            if (!confirm('조기 상환할까요?')) return;
+            const r = await postJson('/api/finance/repay', { loan_id: el.dataset.repay });
+            if (r) {
+                showToast('대출을 상환했습니다.');
+                await refreshTeam();
+            }
+        };
+    });
 }
 
 // ----------------------------------------------------
@@ -462,6 +685,7 @@ function renderBizCard(b) {
                 <div>
                     <div class="biz-title">
                         <span class="biz-tier">${b.tier}</span>${b.name}
+                        <span class="biz-genre">${b.genre_label}</span>
                     </div>
                     <div class="biz-sub">
                         ${b.tier_name} · 업무 ${b.tasks.length}개 (완료 ${done}) ·
@@ -1196,7 +1420,13 @@ async function advanceWeek(rest = false) {
             renderPool();
         }
 
-        const messages = [`🗓️ ${data.week}주차 시작`, ...data.events];
+        const net = data.week_net || 0;
+        const netTxt = `${net >= 0 ? '+' : ''}$${net.toLocaleString()}`;
+        const messages = [`🗓️ ${data.week}주차 시작 (이번 주 손익 ${netTxt})`, ...data.events];
+        if (data.settlement) {
+            const s = data.settlement;
+            messages.push(`📊 결산 — 순이익 ${s.net >= 0 ? '+' : ''}$${s.net.toLocaleString()}`);
+        }
         if (data.is_bankrupt) messages.push('💀 게임 오버 — 회사가 파산했습니다.');
         showToastQueue(messages);
     } catch (error) {

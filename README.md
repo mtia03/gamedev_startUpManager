@@ -108,6 +108,7 @@ uv run python main.py
 ## 설계 문서
 
 - [`docs/devlog-2026-07-27.md`](docs/devlog-2026-07-27.md) — 턴 루프 · 사업 시스템 · 협상 재설계 개발 기록
+- [`docs/finance-model.md`](docs/finance-model.md) — 자산/부채/자본 재무제표 설계 (기획, 미구현)
 - [`docs/llm-prompt-design.md`](docs/llm-prompt-design.md) — 면접 · 요구치 산출 프롬프트 설계와 작업 백로그
 - [`docs/project-requirement-model.md`](docs/project-requirement-model.md) — 프로젝트 요구 모델
 - [`docs/project-scale-spec.md`](docs/project-scale-spec.md) — 규모별 스펙 정의

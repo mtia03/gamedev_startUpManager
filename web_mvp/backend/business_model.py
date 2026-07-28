@@ -144,11 +144,59 @@ def pick_tier(reputation, desk_count):
     return random.choices(tiers, weights=weights, k=1)[0]
 
 
-BUSINESS_NAMES = [
-    "사내 관리 도구", "쇼핑몰 리뉴얼", "예약 시스템", "구독 결제 모듈",
-    "물류 추적 대시보드", "사내 메신저", "추천 엔진", "결제 게이트웨이",
-    "헬스케어 앱", "교육 플랫폼", "게임 백오피스", "실시간 협업 도구",
-]
+# ── 사업 종류 (genre) ────────────────────────────────────────
+# 같은 등급이라도 종류가 다르면 필요한 인력과 설비가 달라진다.
+#   core   : 반드시 들어가는 필드 (업무 자리가 허락하는 한)
+#   extra  : 남는 자리를 채울 후보
+#   reward : 등급 배율 위에 얹는 프리미엄 (기간 보정과는 별개)
+#   weeks  : 목표 기간 배율
+#   unlock : 이 명성부터 제안된다
+GENRES = {
+    "internal": {
+        "label": "사내 도구", "core": ["FE", "BE"], "extra": ["UIUX"],
+        "reward": 0.95, "weeks": 0.9, "unlock": 0,
+        "names": ["사내 관리 도구", "사내 메신저", "근태 관리 시스템", "전자결재 시스템"],
+    },
+    "commerce": {
+        "label": "커머스", "core": ["FE", "BE"], "extra": ["UIUX", "Ops"],
+        "reward": 1.00, "weeks": 1.0, "unlock": 0,
+        "names": ["쇼핑몰 리뉴얼", "구독 결제 모듈", "예약 시스템", "결제 게이트웨이"],
+    },
+    "mobile": {
+        "label": "모바일 앱", "core": ["Mobile", "UIUX"], "extra": ["BE", "FE"],
+        "reward": 1.08, "weeks": 1.0, "unlock": 3000,
+        "names": ["헬스케어 앱", "교육 플랫폼 앱", "배달 주문 앱", "가계부 앱"],
+    },
+    "infra": {
+        "label": "인프라 · 플랫폼", "core": ["Ops", "BE"], "extra": ["FE"],
+        "reward": 1.05, "weeks": 1.2, "unlock": 6000,
+        "names": ["물류 추적 대시보드", "사내 클라우드 전환", "모니터링 플랫폼",
+                  "대용량 로그 파이프라인"],
+    },
+    "ai": {
+        "label": "AI · 데이터", "core": ["AI", "BE"], "extra": ["Ops", "FE"],
+        "reward": 1.20, "weeks": 1.1, "unlock": 8000,
+        "names": ["추천 엔진", "수요 예측 시스템", "문서 분류 엔진", "이상 거래 탐지"],
+    },
+    "realtime": {
+        "label": "실시간 · 게임", "core": ["Mobile", "BE", "Ops"], "extra": ["FE", "UIUX"],
+        "reward": 1.12, "weeks": 1.1, "unlock": 10000,
+        "names": ["게임 백오피스", "실시간 협업 도구", "라이브 스트리밍 서비스",
+                  "멀티플레이 매치메이킹"],
+    },
+}
+
+
+def genres_for_reputation(reputation):
+    """명성으로 해금된 사업 종류."""
+    return [k for k, v in GENRES.items() if reputation >= v["unlock"]]
+
+
+def pick_genre(reputation):
+    """제안할 종류를 고른다. 새로 열린 종류가 조금 더 자주 나온다."""
+    keys = genres_for_reputation(reputation)
+    weights = [1.0 + (1.0 if GENRES[k]["unlock"] > 0 else 0.0) for k in keys]
+    return random.choices(keys, weights=weights, k=1)[0]
 TASK_NAME_BY_FIELD = {
     "FE": "프론트엔드 구현", "BE": "백엔드 API 구축", "Mobile": "모바일 앱 개발",
     "AI": "추천/AI 모델 개발", "Ops": "인프라 및 배포 구성", "UIUX": "UI/UX 설계",
@@ -193,25 +241,57 @@ class Business:
 
     _seq = 0
 
-    def __init__(self, tier):
+    def __init__(self, tier, genre=None):
         Business._seq += 1
         self.tag = f"B{Business._seq:03d}"
         spec = TIERS[tier]
         self.tier = tier
         self.tier_name = spec["name"]
-        self.name = random.choice(BUSINESS_NAMES)
-        self.target_weeks = spec["target_weeks"]
+
+        self.genre = genre or random.choice(list(GENRES))
+        g = GENRES[self.genre]
+        self.genre_label = g["label"]
+        self.name = random.choice(g["names"])
+
+        # 기간은 종류에 따라 늘거나 준다
+        self.target_weeks = max(1, round(spec["target_weeks"] * g["weeks"]))
         self.crew = spec["crew"]
         self.gate = spec["gate"]
         self.status = "offered"         # offered / active / completed
         self.started_week = None
         self.completed_week = None
         self.payout = 0
+        # 회계 — 진행기준 수익 인식용
+        self.recognized = 0.0        # 지금까지 수익으로 잡은 금액
+        self.advance_received = 0    # 착수금으로 받은 현금
 
         self.tasks = self._build_tasks(spec)
+        # 보상은 실제 기간에 비례한다 (길면 인건비도 그만큼 들기 때문).
+        # 종류 프리미엄은 그 위에 얹는다.
         self.reward = int(spec["crew"] * BASELINE_WEEKLY_SALARY
-                          * spec["target_weeks"] * REWARD_MULTIPLIER[tier])
-        self.reputation_gain = REPUTATION_GAIN[tier]
+                          * self.target_weeks * REWARD_MULTIPLIER[tier] * g["reward"])
+        self.reputation_gain = int(REPUTATION_GAIN[tier] * g["reward"])
+
+    def _pick_fields(self, count):
+        """종류의 핵심 필드를 먼저 채우고, 남는 자리를 부가 필드로 메운다.
+
+        자리가 모자라면 핵심 필드 중 일부만 들어간다 (낮은 등급).
+        그래도 모자라면 나머지 필드에서 아무거나 가져온다.
+        """
+        g = GENRES[self.genre]
+        core = random.sample(g["core"], min(count, len(g["core"])))
+        chosen = list(core)
+
+        pool = [f for f in g["extra"] if f not in chosen]
+        random.shuffle(pool)
+        while len(chosen) < count and pool:
+            chosen.append(pool.pop())
+
+        rest = [f for f in FIELDS if f not in chosen]
+        random.shuffle(rest)
+        while len(chosen) < count and rest:
+            chosen.append(rest.pop())
+        return chosen
 
     def _build_tasks(self, spec):
         """업무를 만들고 계층(layer) 단위로 선행 관계를 건다.
@@ -223,7 +303,7 @@ class Business:
         if self.tier == "T1":
             count = random.randint(1, 2)
 
-        fields = random.sample(FIELDS, count)
+        fields = self._pick_fields(count)
         layers = min(spec["layers"], count)
         # 업무를 계층에 최대한 고르게 배분
         buckets = [[] for _ in range(layers)]
@@ -259,6 +339,11 @@ class Business:
     def is_complete(self):
         return all(t.status == "done" for t in self.tasks)
 
+    def overall_ratio(self):
+        """사업 전체 진행률 — 업무별 요구 공수로 가중 평균한다."""
+        total = sum(t.required for t in self.tasks) or 1
+        return sum(t.required * t.ratio for t in self.tasks) / total
+
     def refresh_locks(self):
         """선행 업무가 모두 끝난 업무를 ready로 연다."""
         done = {t.tag for t in self.tasks if t.status == "done"}
@@ -292,6 +377,7 @@ class Business:
         return {
             "tag": self.tag, "name": self.name, "tier": self.tier,
             "tier_name": self.tier_name, "status": self.status,
+            "genre": self.genre, "genre_label": self.genre_label,
             "reward": self.reward, "payout": self.payout,
             "reputation_gain": self.reputation_gain,
             "target_weeks": self.target_weeks, "crew": self.crew,

@@ -706,6 +706,18 @@ textarea:focus {
     margin-right: 6px;
 }
 
+.biz-genre {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(16, 185, 129, 0.18);
+    color: #6ee7b7;
+    font-size: 10px;
+    font-weight: 700;
+    vertical-align: middle;
+}
+
 .biz-reward {
     text-align: right;
     white-space: nowrap;
@@ -1418,6 +1430,166 @@ textarea:focus {
 .stat-cell .v { display: block; font-size: 13px; font-weight: 700; margin-top: 2px; }
 
 .staff-actions { margin-top: 12px; display: flex; gap: 8px; }
+
+/* ── 설비 ────────────────────────────────────────────────── */
+.eq-card {
+    border: 1px solid var(--panel-border);
+    border-radius: var(--border-radius-md);
+    background: rgba(255, 255, 255, 0.03);
+    padding: 14px;
+    margin-bottom: 10px;
+}
+
+.eq-card.warn { border-color: rgba(245, 158, 11, 0.4); }
+
+.eq-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.eq-name { font-size: 14px; font-weight: 700; }
+
+.eq-price {
+    text-align: right;
+    white-space: nowrap;
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--neon-orange);
+}
+
+.eq-price small {
+    display: block;
+    font-size: 10px;
+    font-weight: 400;
+    color: var(--text-secondary);
+}
+
+.eq-ok { color: var(--neon-green); }
+.eq-short { color: var(--neon-orange); font-weight: 700; }
+.eq-idle { color: var(--text-secondary); }
+
+.eq-actions { display: flex; gap: 6px; margin-top: 10px; }
+
+.eq-units {
+    margin-top: 10px;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    padding-top: 8px;
+}
+
+.eq-unit {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 0;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.eq-unit.aged { color: var(--neon-red); }
+
+/* ── 재무 ────────────────────────────────────────────────── */
+.fin-summary {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-bottom: 16px;
+}
+
+.fin-summary > div {
+    padding: 10px 12px;
+    border-radius: var(--border-radius-md);
+    background: rgba(0, 0, 0, 0.25);
+}
+
+.fin-summary .k {
+    display: block;
+    font-size: 10px;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+}
+
+.fin-summary .v {
+    display: block;
+    font-size: 15px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+
+.fin-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+}
+
+.fin-title {
+    font-family: var(--font-title);
+    font-size: 13px;
+    margin: 14px 0 8px;
+    color: var(--text-secondary);
+}
+
+.fin-section {
+    padding: 10px 12px;
+    border-radius: var(--border-radius-md);
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--panel-border);
+    margin-bottom: 10px;
+}
+
+.fin-section h4 {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+}
+
+.fin-line {
+    display: flex;
+    justify-content: space-between;
+    padding: 3px 0;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+
+.fin-line.total {
+    margin-top: 5px;
+    padding-top: 6px;
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
+    font-weight: 700;
+}
+
+.fin-loan {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    font-size: 12px;
+}
+
+.fin-borrow {
+    display: flex;
+    gap: 6px;
+    margin-top: 10px;
+}
+
+.fin-borrow input { flex: 1; }
+
+.fin-hist {
+    display: grid;
+    grid-template-columns: 60px 1fr 1fr 100px;
+    gap: 8px;
+    padding: 6px 0;
+    font-size: 11px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    font-variant-numeric: tabular-nums;
+}
+
+.fin-hist .net { text-align: right; font-weight: 700; }
+.fin-hist.plus .net { color: var(--neon-green); }
+.fin-hist.minus .net { color: var(--neon-red); }
 
 /* 이벤트 로그 */
 .log-filters {
