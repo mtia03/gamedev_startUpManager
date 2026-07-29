@@ -145,19 +145,19 @@ READABILITY = {
 }
 
 
-def _weighted(table):
+def _weighted(table, rng=random):
     keys = list(table)
-    return random.choices(keys, weights=[table[k]["weight"] for k in keys], k=1)[0]
+    return rng.choices(keys, weights=[table[k]["weight"] for k in keys], k=1)[0]
 
 
-def roll_attributes():
+def roll_attributes(rng=random):
     """지원자 생성 시 세 축을 각각 굴린다. 서로 독립이다."""
     counts, weights = zip(*NEED_COUNT_WEIGHTS)
-    n = random.choices(counts, weights=weights, k=1)[0]
+    n = rng.choices(counts, weights=weights, k=1)[0]
     return {
-        "circumstance": _weighted(CIRCUMSTANCES),
-        "needs": random.sample(list(NEEDS), n),
-        "readability": _weighted(READABILITY),
+        "circumstance": _weighted(CIRCUMSTANCES, rng),
+        "needs": rng.sample(list(NEEDS), n),
+        "readability": _weighted(READABILITY, rng),
     }
 
 

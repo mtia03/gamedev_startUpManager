@@ -16,7 +16,7 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 # 기존 모델 모듈 임포트 (폴더 내 파일)
 from company_model import Corporate
-from developer_model import Developer
+from developer_model import Developer, IdSequence
 import business_model as biz
 import verbalizer as vb
 import equipment as eq
@@ -294,12 +294,22 @@ class GameState:
         self.week = 1
         self.is_bankrupt = False
 
-    def start(self, company_name, difficulty):
-        """시작 화면의 설정으로 게임을 초기화한다. 이미 진행 중이면 새 판으로 덮어쓴다."""
+    def start(self, company_name, difficulty, seed=None):
+        """시작 화면의 설정으로 게임을 초기화한다. 이미 진행 중이면 새 판으로 덮어쓴다.
+
+        난수원과 태그 발급기를 이 인스턴스가 소유한다. 전역 상태를 쓰지 않으므로
+        새 판을 시작하면 개발자 번호도 D00001부터 다시 매겨진다.
+        """
         preset = DIFFICULTIES[difficulty]
+        self.seed = seed
+        self.rng = random.Random(seed)
+        self.dev_ids = IdSequence("D")
+        self.corp_ids = IdSequence("C", width=2)
+        self.biz_ids = IdSequence("B", width=3)
 
         # 1. 플레이어의 스타트업 생성 (직원 0명으로 초기화)
-        self.company = Corporate(0)
+        self.company = Corporate(0, tag=self.corp_ids.next(),
+                                 rng=self.rng, dev_ids=self.dev_ids)
         self.company.corporateName = company_name
         self.company.staffNums = 0
         self.company.staff_tags = []
@@ -453,9 +463,10 @@ class GameState:
     def refresh_offers(self, count=3):
         """명성과 감당 가능한 인원에 맞춰 수주 대기 목록을 채운다."""
         while len(self.offered_businesses) < count:
-            tier = biz.pick_tier(self.company.reputation, len(self.desks))
-            genre = biz.pick_genre(self.company.reputation)
-            self.offered_businesses.append(biz.Business(tier, genre))
+            tier = biz.pick_tier(self.company.reputation, len(self.desks), self.rng)
+            genre = biz.pick_genre(self.company.reputation, self.rng)
+            self.offered_businesses.append(
+                biz.Business(tier, genre, tag=self.biz_ids.next(), rng=self.rng))
 
     def find_business(self, tag):
         for b in self.offered_businesses + self.active_businesses:
@@ -528,7 +539,7 @@ class GameState:
                 if t.progress >= t.required:
                     p = biz.success_probability(devs, t, b)
                     score = biz.success_score(devs, t, b)
-                    grade, keep = biz.roll_outcome(p, score, b.tier)
+                    grade, keep = biz.roll_outcome(p, score, b.tier, self.rng)
                     t.grade = grade
                     t.attempts += 1
 
@@ -728,7 +739,7 @@ class GameState:
             chance = (MORALE_QUIT_THRESHOLD - dev.morale) / MORALE_QUIT_THRESHOLD
             if dev.fatigue >= FATIGUE_QUIT_LIMIT:
                 chance += FATIGUE_QUIT_BONUS
-            if random.random() < chance:
+            if self.rng.random() < chance:
                 self.resign_employee(tag)
                 msg = f"{dev.first_name} {dev.last_name} 님이 회사를 떠났습니다. (사기 {dev.morale})"
                 events.append(msg)
@@ -770,7 +781,8 @@ class GameState:
         for _ in range(count):
             if len(self.candidates) >= self.candidate_capacity():
                 return
-            dev = Developer(True, self.company.reputation)
+            dev = Developer(True, self.company.reputation,
+                            tag=self.dev_ids.next(), rng=self.rng)
             # 스탯에 비례하되, 회사 명성이 낮으면 눈높이도 낮아진다
             base = dev.CA * SALARY_PER_CA + SALARY_BASE
             dev.current_salary = int(base * salary_reputation_factor(self.company.reputation))
@@ -783,7 +795,7 @@ class GameState:
             dev.reveal_turns = 0        # 능력을 드러낸 대화 횟수 (추정 구간이 좁아진다)
 
             # 세 축을 각각 굴린다 (자금 사정 / 원하는 것 / 파악 난이도)
-            for k, v in vb.roll_attributes().items():
+            for k, v in vb.roll_attributes(self.rng).items():
                 setattr(dev, k, v)
             dev.known = set()           # 플레이어가 알아낸 것: circumstance / needs
             dev.proven_needs = set()    # 실제로 충족시켜 보여준 니즈
@@ -792,7 +804,7 @@ class GameState:
 
             # 지원자는 영원히 머무르지 않는다
             dev.applied_week = self.week
-            dev.expires_week = self.week + random.randint(
+            dev.expires_week = self.week + self.rng.randint(
                 CANDIDATE_TTL_MIN, CANDIDATE_TTL_MAX)
 
             self.candidates[dev.tag] = dev
@@ -835,7 +847,7 @@ class GameState:
             arrivals = 2
             self.expansion_buzz -= 1
 
-        if len(self.candidates) < self.candidate_capacity() and random.random() < chance:
+        if len(self.candidates) < self.candidate_capacity() and self.rng.random() < chance:
             before = set(self.candidates)
             self.generate_new_candidates(arrivals)
             for tag in set(self.candidates) - before:
@@ -1180,7 +1192,7 @@ async def chat_with_candidate(req: ChatRequest):
             chance += need_count * vb.NEED_WALKAWAY_PENALTY * (1 - limits["needs_ratio"])
             # 허풍이 들통나면 그 자리에서 신뢰가 깎인다
             chance += len(appeal_misses) * 0.05
-            if random.random() < chance:
+            if game_state.rng.random() < chance:
                 walked_away = True
                 walk_reason = ("제시 금액이 기대에 크게 못 미쳐 협상을 접었습니다."
                                if lowball else

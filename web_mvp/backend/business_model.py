@@ -129,7 +129,7 @@ def tiers_for_reputation(reputation):
     return [t for t in TIER_ORDER if reputation >= REPUTATION_UNLOCK[t]]
 
 
-def pick_tier(reputation, desk_count):
+def pick_tier(reputation, desk_count, rng=random):
     """제안할 등급을 고른다.
 
     감당 가능한 인원(책상 수)을 크게 넘는 등급은 뽑힐 확률을 낮춰서,
@@ -141,7 +141,7 @@ def pick_tier(reputation, desk_count):
         crew = TIERS[t]["crew"]
         # 책상 수로 감당 가능하면 높은 등급일수록 선호, 벅차면 급감
         weights.append(3.0 if crew <= desk_count else max(0.15, desk_count / crew))
-    return random.choices(tiers, weights=weights, k=1)[0]
+    return rng.choices(tiers, weights=weights, k=1)[0]
 
 
 # ── 사업 종류 (genre) ────────────────────────────────────────
@@ -192,11 +192,11 @@ def genres_for_reputation(reputation):
     return [k for k, v in GENRES.items() if reputation >= v["unlock"]]
 
 
-def pick_genre(reputation):
+def pick_genre(reputation, rng=random):
     """제안할 종류를 고른다. 새로 열린 종류가 조금 더 자주 나온다."""
     keys = genres_for_reputation(reputation)
     weights = [1.0 + (1.0 if GENRES[k]["unlock"] > 0 else 0.0) for k in keys]
-    return random.choices(keys, weights=weights, k=1)[0]
+    return rng.choices(keys, weights=weights, k=1)[0]
 TASK_NAME_BY_FIELD = {
     "FE": "프론트엔드 구현", "BE": "백엔드 API 구축", "Mobile": "모바일 앱 개발",
     "AI": "추천/AI 모델 개발", "Ops": "인프라 및 배포 구성", "UIUX": "UI/UX 설계",
@@ -241,17 +241,21 @@ class Business:
 
     _seq = 0
 
-    def __init__(self, tier, genre=None):
-        Business._seq += 1
-        self.tag = f"B{Business._seq:03d}"
+    def __init__(self, tier, genre=None, *, tag=None, rng=None):
+        # 난수원과 태그를 주입받으면 전역 상태 없이 재현할 수 있다
+        self.rng = rng or random
+        if tag is None:
+            Business._seq += 1
+            tag = f"B{Business._seq:03d}"
+        self.tag = tag
         spec = TIERS[tier]
         self.tier = tier
         self.tier_name = spec["name"]
 
-        self.genre = genre or random.choice(list(GENRES))
+        self.genre = genre or self.rng.choice(list(GENRES))
         g = GENRES[self.genre]
         self.genre_label = g["label"]
-        self.name = random.choice(g["names"])
+        self.name = self.rng.choice(g["names"])
 
         # 기간은 종류에 따라 늘거나 준다
         self.target_weeks = max(1, round(spec["target_weeks"] * g["weeks"]))
@@ -279,16 +283,16 @@ class Business:
         그래도 모자라면 나머지 필드에서 아무거나 가져온다.
         """
         g = GENRES[self.genre]
-        core = random.sample(g["core"], min(count, len(g["core"])))
+        core = self.rng.sample(g["core"], min(count, len(g["core"])))
         chosen = list(core)
 
         pool = [f for f in g["extra"] if f not in chosen]
-        random.shuffle(pool)
+        self.rng.shuffle(pool)
         while len(chosen) < count and pool:
             chosen.append(pool.pop())
 
         rest = [f for f in FIELDS if f not in chosen]
-        random.shuffle(rest)
+        self.rng.shuffle(rest)
         while len(chosen) < count and rest:
             chosen.append(rest.pop())
         return chosen
@@ -301,7 +305,7 @@ class Business:
         """
         count = spec["fields"]
         if self.tier == "T1":
-            count = random.randint(1, 2)
+            count = self.rng.randint(1, 2)
 
         fields = self._pick_fields(count)
         layers = min(spec["layers"], count)
@@ -315,7 +319,7 @@ class Business:
             current_tags = []
             for f in bucket:
                 # 같은 등급 안에서도 변화가 생기도록 요구 공수에 ±20%
-                required = int(spec["req_per_field"] * random.uniform(0.8, 1.2))
+                required = int(spec["req_per_field"] * self.rng.uniform(0.8, 1.2))
                 t = Task(f"{self.tag}-{len(tasks) + 1}", f, required, list(prev_tags))
                 t.status = "ready" if not prev_tags else "locked"
                 tasks.append(t)
@@ -491,14 +495,14 @@ def outcome_odds(p, score, tier):
     return {"critical": crit, "fail": fail, "success": success, "great": great}
 
 
-def roll_outcome(p, score, tier):
+def roll_outcome(p, score, tier, rng=random):
     """완료 시점 판정. (등급, 남길 진행률 비율)을 돌려준다.
 
     성공/큰 성공이면 비율은 None (업무 완료).
     실패면 진행률이 그 비율로 되감긴다 — 능력치가 좋을수록 많이 남는다.
     """
     odds = outcome_odds(p, score, tier)
-    r = random.random()
+    r = rng.random()
 
     acc = odds["critical"]
     if r < acc:

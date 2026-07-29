@@ -1,17 +1,39 @@
 import random
 import csv
 
-class Developer():
-    _next_developer_id = 1 # 개발자 ID를 위한 클래스 레벨 카운터
-    all_developers = {} # 모든 개발자 객체를 태그로 접근하기 위한 전역 레지스트리
 
-    def __init__(self, firstSave=None, reputation=0, company_tag=None): # company_tag 추가
-        self.tag = f"D{Developer._next_developer_id:05d}" # D00001, D00002 형식으로 태그 생성
-        Developer._next_developer_id += 1 # 다음 개발자를 위해 카운터 증가
-        Developer.all_developers[self.tag] = self # 생성된 개발자를 전역 레지스트리에 저장
+class IdSequence:
+    """태그 번호 발급기.
+
+    클래스 레벨 카운터를 쓰면 게임을 새로 시작해도 번호가 이어진다.
+    유니티에서는 static이 에디터 플레이 재시작 후에도 살아남아 같은 문제가 생기므로,
+    번호 발급을 게임 인스턴스가 소유하도록 분리했다.
+    """
+
+    def __init__(self, prefix, width=5):
+        self.prefix = prefix
+        self.width = width
+        self.value = 0
+
+    def next(self):
+        self.value += 1
+        return f"{self.prefix}{self.value:0{self.width}d}"
+
+
+# 스크립트에서 Developer()를 단독으로 만들 때만 쓰는 대체 발급기.
+# 게임 본체(GameState)는 자기 것을 넘겨준다.
+_standalone_ids = IdSequence("D")
+
+
+class Developer():
+    def __init__(self, firstSave=None, reputation=0, company_tag=None,
+                 *, tag=None, rng=None):
+        # 난수원을 주입받으면 같은 시드로 재현할 수 있다 (이식 시 대조 검증용)
+        self.rng = rng or random
+        self.tag = tag or _standalone_ids.next()
 
         self.firstGen = firstSave
-        self.gender = random.randint(0,1)
+        self.gender = self.rng.randint(0, 1)
         self.career = [] # 개발자의 경력을 저장할 배열
         if company_tag:
             self.career.append(company_tag) # 소속된 회사의 태그를 경력에 추가
@@ -39,8 +61,8 @@ class Developer():
             first_names = self._openCSVFile(name_csv_female)
         lastnames = self._openCSVFile(name_csv_lastnames)
 
-        self.first_name = random.choice(first_names)
-        self.last_name = random.choice(lastnames)
+        self.first_name = self.rng.choice(first_names)
+        self.last_name = self.rng.choice(lastnames)
     
     def createStats(self, reputation):
         #피로도는 0-100, 100에서 최대 피로. 사기는 0-100, 100에서 최대 사기.
@@ -50,7 +72,7 @@ class Developer():
         #정신병은 0-20, 높을수록 근처 인물들에 악영향 가능성 높아짐
         psychological_issue_values = list(range(21)) # 0부터 20까지의 값
         psychological_issue_weights = [21 - i for i in range(21)] # 0에 21, 1에 20, ..., 20에 1의 가중치
-        self.psychological_issue = random.choices(psychological_issue_values, weights=psychological_issue_weights, k=1)[0]
+        self.psychological_issue = self.rng.choices(psychological_issue_values, weights=psychological_issue_weights, k=1)[0]
 
         #교육 수준(비전공자, 학사, 석사, 박사)
         education_list = ["None", "BD", "MD", "PhD"]
@@ -63,7 +85,7 @@ class Developer():
                 education_weights = [10, 100, 30, 10]
         else:
             education_weights = [20, 60, 15, 5]
-        self.education = random.choices(education_list, weights=education_weights, k=1)[0]
+        self.education = self.rng.choices(education_list, weights=education_weights, k=1)[0]
 
         #전문분야(FE, BE, Mobile, AI, Ops, UIUX)
         # 1. 학위별 체급 설정 (최소 스탯 및 가용 포인트)
@@ -79,19 +101,19 @@ class Developer():
         
         setting = edu_settings[self.education]
         fields = ["FE", "BE", "Mobile", "AI", "Ops", "UIUX"]
-        self.main_field = random.choice(fields)
+        self.main_field = self.rng.choice(fields)
 
         # 2. 기본 체급(Base Line) 생성
         self.stats = {}
         for f in fields:
-            self.stats[f] = random.randint(setting["min_val"][0], setting["min_val"][1])
+            self.stats[f] = self.rng.randint(setting["min_val"][0], setting["min_val"][1])
 
         # 3. 보너스 포인트 가중치 분배
         remaining_points = setting["bonus"]
         weights = [setting["focus"] if f == self.main_field else 1.0 for f in fields]
 
         while remaining_points > 0:
-            target = random.choices(fields, weights=weights, k=1)[0]
+            target = self.rng.choices(fields, weights=weights, k=1)[0]
             if self.stats[target] < 50:
                 self.stats[target] += 1
                 remaining_points -= 1
@@ -115,7 +137,7 @@ class Developer():
         exponent = 10
 
         # 0과 1 사이의 난수를 생성하고 편향 지수를 적용합니다.
-        biased_random_factor = random.random() ** exponent
+        biased_random_factor = self.rng.random() ** exponent
         
         # 편향된 난수를 PA 범위에 맞춰 스케일링하고 정수로 변환합니다.
         self.PA = int(pa_lower_bound + biased_random_factor * (pa_upper_bound - pa_lower_bound))
